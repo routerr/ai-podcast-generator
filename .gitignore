@@ -3,14 +3,6 @@
 .env.local
 .env.*.local
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.venv/
-*.egg-info/
-
 # Node.js
 node_modules/
 dist/
@@ -24,6 +16,12 @@ dist/
 
 # OS
 .DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+._*
 Thumbs.db
 
 # Project artifacts
