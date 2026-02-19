@@ -3,7 +3,7 @@
  * 實現與 Google Gemini API 的整合，用於生成對話式播客腳本
  */
 
-import { Dialogue, Outline, OutlineSection, ResearchResult, Script, ScriptSection } from '../types';
+import { Dialogue, Outline, OutlineSection, ResearchResult, Script, ScriptSection, Source } from '../types';
 
 const LOCAL_GEMINI_GENERATE_ENDPOINT = '/gemini/generate';
 const DEPLOY_GEMINI_GENERATE_ENDPOINT = '/api/gemini/generate';
@@ -13,6 +13,66 @@ const MAX_API_KEY_LENGTH = 512;
 type JsonRecord = Record<string, unknown>;
 
 const safeString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+
+const safeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => safeString(item)).filter((item) => item.length > 0);
+};
+
+const safeSourceArray = (value: unknown): Source[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((source): Source | null => {
+      if (!source || typeof source !== 'object') {
+        return null;
+      }
+
+      const sourceObject = source as JsonRecord;
+      const title = safeString(sourceObject.title).trim();
+      const url = safeString(sourceObject.url).trim();
+      const snippet = safeString(sourceObject.snippet).trim();
+
+      if (!title && !url && !snippet) {
+        return null;
+      }
+
+      return {
+        title: title || url || 'Untitled source',
+        url,
+        snippet
+      };
+    })
+    .filter((item): item is Source => item !== null);
+};
+
+const safeSectionArray = (value: unknown): OutlineSection[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((section, index): OutlineSection | null => {
+      if (!section || typeof section !== 'object') {
+        return null;
+      }
+
+      const sectionObject = section as JsonRecord;
+      const rawDuration = safeNumber(sectionObject.duration);
+
+      return {
+        id: safeString(sectionObject.id) || `section-${index + 1}`,
+        title: safeString(sectionObject.title) || `Section ${index + 1}`,
+        keyPoints: safeStringArray(sectionObject.keyPoints),
+        duration: rawDuration && rawDuration > 0 ? Math.round(rawDuration) : 180
+      };
+    })
+    .filter((item): item is OutlineSection => item !== null);
+};
 
 const safeNumber = (value: unknown): number | null => {
   const parsed = Number(value);
@@ -353,6 +413,108 @@ export class GeminiService {
     throw new Error(
       'Gemini proxy is unavailable. In local dev, restart `frontend` dev server and retry.'
     );
+  }
+
+  /**
+   * 研究主題並回傳結構化結果
+   */
+  async researchTopic(apiKey: string, topic: string): Promise<ResearchResult> {
+    try {
+      const prompt = `
+你是一位資深播客研究員。請輸出 JSON 物件，且只輸出 JSON（不要 Markdown）：
+{
+  "summary": "string",
+  "keyPoints": ["string"],
+  "sources": [
+    {
+      "title": "string",
+      "url": "string",
+      "snippet": "string"
+    }
+  ]
+}
+
+要求：
+1. summary 需完整、可直接用於寫稿（至少 6 段）。
+2. keyPoints 至少 10 條。
+3. sources 至少 6 筆，需附標題、網址、摘要。
+
+研究主題：${topic}
+      `.trim();
+
+      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.5);
+      const parsed = this.extractJsonRecord(content);
+
+      return {
+        topic,
+        summary: safeString(parsed?.summary, content).trim(),
+        keyPoints: safeStringArray(parsed?.keyPoints),
+        sources: safeSourceArray(parsed?.sources),
+        timestamp: new Date()
+      };
+    } catch (error: unknown) {
+      console.error('研究主題時發生錯誤:', error);
+      if (error instanceof Error) {
+        throw new Error(`研究主題失敗: ${error.message}`);
+      }
+      throw new Error('研究主題失敗: 發生未知錯誤');
+    }
+  }
+
+  /**
+   * 根據研究結果生成大綱
+   */
+  async generateOutline(apiKey: string, research: ResearchResult): Promise<Outline> {
+    try {
+      const prompt = `
+你是一位專業播客製作人。請輸出 JSON 物件，且只輸出 JSON（不要 Markdown）：
+{
+  "title": "string",
+  "description": "string",
+  "sections": [
+    {
+      "id": "string",
+      "title": "string",
+      "keyPoints": ["string"],
+      "duration": 180
+    }
+  ]
+}
+
+要求：
+1. sections 至少 8 個、至多 12 個。
+2. 每段 duration 60~300 秒，整體長度約 15~30 分鐘。
+3. 結構需包含開場、主體多段、總結與行動建議。
+
+主題：${research.topic}
+研究摘要：${research.summary}
+關鍵要點：${research.keyPoints.join('；')}
+      `.trim();
+
+      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.6);
+      const parsed = this.extractJsonRecord(content);
+      const sections = safeSectionArray(parsed?.sections);
+
+      return {
+        title: safeString(parsed?.title, `關於 ${research.topic} 的播客`),
+        description: safeString(parsed?.description, research.summary),
+        sections:
+          sections.length > 0
+            ? sections
+            : research.keyPoints.slice(0, 8).map((point, index) => ({
+                id: `section-${index + 1}`,
+                title: `重點 ${index + 1}`,
+                keyPoints: [point],
+                duration: 180
+              }))
+      };
+    } catch (error: unknown) {
+      console.error('生成大綱時發生錯誤:', error);
+      if (error instanceof Error) {
+        throw new Error(`生成大綱失敗: ${error.message}`);
+      }
+      throw new Error('生成大綱失敗: 發生未知錯誤');
+    }
   }
 
   /**

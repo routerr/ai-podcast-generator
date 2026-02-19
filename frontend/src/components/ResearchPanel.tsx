@@ -1,14 +1,19 @@
 import React, { useState } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
-import { PerplexityService } from '../services/perplexityService';
 import { ResearchResult } from '../types';
 import { Sparkles } from 'lucide-react';
+import {
+  getMissingProviderKeys,
+  getProviderDisplayName,
+  LlmWorkflowService
+} from '../services/llmWorkflowService';
 
 const ResearchPanel: React.FC = () => {
   const {
     currentStep,
     apiKeys,
+    config,
     topic,
     isLoading,
     error,
@@ -28,8 +33,13 @@ const ResearchPanel: React.FC = () => {
       return;
     }
 
-    if (!apiKeys.perplexityKey) {
-      setLocalError(t('research.error.missingPerplexity'));
+    const missingProviders = getMissingProviderKeys(apiKeys, config);
+    if (missingProviders.length > 0) {
+      setLocalError(
+        t('llm.error.missingProviderKeys', {
+          providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+        })
+      );
       return;
     }
 
@@ -39,8 +49,8 @@ const ResearchPanel: React.FC = () => {
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'SET_ERROR', payload: null });
 
-      const perplexityService = new PerplexityService(apiKeys.perplexityKey);
-      const result: ResearchResult = await perplexityService.researchTopic(researchTopic);
+      const workflowService = new LlmWorkflowService({ apiKeys, config });
+      const { result }: { result: ResearchResult } = await workflowService.researchTopic(researchTopic);
 
       dispatch({
         type: 'UPDATE_PODCAST_STATE',

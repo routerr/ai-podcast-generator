@@ -1,5 +1,9 @@
 # AI Podcast Generator - 重構架構設計
 
+> ⚠️ 文件狀態說明（2026-02-19）  
+> 本文件主要記錄 2.0 重構設計脈絡。實際上線架構已演進為「前端 + 輕量 proxy/serverless routes（`/api/*`）」。  
+> 請以 `README.md`、`DEPLOY.md`、`CHANGELOG.md` 的最新內容為準。
+
 ## 目錄
 1. [現有專案分析摘要](#1-現有專案分析摘要)
 2. [重構目標與需求](#2-重構目標與需求)
@@ -131,11 +135,11 @@ sequenceDiagram
 
 | 需求 | 解決方案 |
 |------|----------|
-| CORS 限制處理 | Perplexity 和 Gemini API 支援 CORS，可直接從瀏覽器調用 ✅ 已驗證 |
+| CORS 限制處理 | 透過本地 Vite middleware 與部署端 `/api/*` proxy/serverless 路由處理 ✅ 已實現 |
 | API Key 儲存 | localStorage 安全儲存 ✅ 已實現 |
 | 音頻生成 | Web Speech API 或雲端 TTS API ✅ 已實現 |
 | 狀態管理 | React Context + useReducer ✅ 已實現 |
-| 無後端部署 | 靜態網站託管（Vercel、Netlify 等） ✅ 已實現 |
+| 輕量部署模式 | 前端靜態資產 + deploy-time serverless routes ✅ 已實現 |
 
 ---
 

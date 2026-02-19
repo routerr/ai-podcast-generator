@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 
 const PERPLEXITY_SEARCH_API_URL = 'https://api.perplexity.ai/search';
 const PERPLEXITY_CHAT_API_URL = 'https://api.perplexity.ai/chat/completions';
+const OPENROUTER_CHAT_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_MODELS_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const GEMINI_BASE_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const OPENAI_MODELS_API_URL = 'https://api.openai.com/v1/models';
@@ -35,6 +36,19 @@ const normalizeBearerApiKey = (key: string): string =>
     .replace(/^Bearer\s+/i, '')
     .replace(/\s+/g, '');
 const normalizeApiKey = (key: string): string => normalizeWrapping(key);
+const normalizeBaseUrl = (value: string): string =>
+  normalizeWrapping(value)
+    .replace(/\/+$/, '');
+
+const isLocalOllamaBaseUrl = (value: string): boolean => {
+  const normalized = normalizeBaseUrl(value || 'https://api.ollama.com');
+  try {
+    const parsed = new URL(normalized);
+    return ['localhost', '127.0.0.1', '0.0.0.0'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
 
 const isPerplexityExplicitInvalidKey = (responseText: string): boolean =>
   /invalid[_\s-]?api[_\s-]?key|invalid[_\s-]?token|incorrect[_\s-]?api[_\s-]?key|api[_\s-]?key\s+is\s+invalid|api[_\s-]?key\s+not\s+valid|invalid authentication credentials/i.test(
@@ -99,6 +113,7 @@ const providerProxyMiddlewarePlugin = () => ({
         '/pplx/validate',
         '/pplx/search',
         '/pplx/chat',
+        '/llm/chat',
         '/gemini/validate',
         '/gemini/generate',
         '/openai/validate',
@@ -115,12 +130,19 @@ const providerProxyMiddlewarePlugin = () => ({
 
       const body = await parseJsonBody(req);
       const rawApiKey = typeof body.apiKey === 'string' ? body.apiKey : '';
+      const provider = typeof body.provider === 'string' ? body.provider : '';
+      const rawBaseUrl = typeof body.baseUrl === 'string' ? normalizeBaseUrl(body.baseUrl) : '';
+      const ollamaBaseUrl = rawBaseUrl || 'https://api.ollama.com';
+      const allowAnonymousOllama =
+        path === '/llm/chat' &&
+        provider === 'ollama' &&
+        isLocalOllamaBaseUrl(ollamaBaseUrl);
       const apiKey =
-        path.startsWith('/openai') || path.startsWith('/pplx')
+        path.startsWith('/openai') || path.startsWith('/pplx') || path.startsWith('/llm')
           ? normalizeBearerApiKey(rawApiKey)
           : normalizeApiKey(rawApiKey);
 
-      if (!apiKey || apiKey.length <= 10 || apiKey.length > MAX_API_KEY_LENGTH) {
+      if (!allowAnonymousOllama && (!apiKey || apiKey.length <= 10 || apiKey.length > MAX_API_KEY_LENGTH)) {
         return sendJson(res, 400, { valid: false, error: 'missing_or_invalid_api_key' });
       }
 
@@ -269,6 +291,52 @@ const providerProxyMiddlewarePlugin = () => ({
               Authorization: `Bearer ${apiKey}`,
               'Content-Type': 'application/json'
             },
+            body: JSON.stringify(payload)
+          });
+
+          const upstreamText = await upstreamResponse.text();
+          const upstreamContentType = upstreamResponse.headers.get('content-type') || 'application/json; charset=utf-8';
+          return sendRaw(res, upstreamResponse.status, upstreamContentType, upstreamText);
+        } catch {
+          return sendJson(res, 502, { error: 'upstream_unreachable' });
+        }
+      }
+
+      if (path === '/llm/chat') {
+        const payload = typeof body.payload === 'object' && body.payload !== null ? body.payload : null;
+
+        if (!payload) {
+          return sendJson(res, 400, { error: 'missing_payload' });
+        }
+
+        let upstreamUrl = '';
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json'
+        };
+        if (apiKey) {
+          headers.Authorization = `Bearer ${apiKey}`;
+        }
+
+        if (provider === 'openrouter') {
+          upstreamUrl = OPENROUTER_CHAT_API_URL;
+          if (req.headers.origin && typeof req.headers.origin === 'string') {
+            headers['HTTP-Referer'] = req.headers.origin;
+          }
+          headers['X-Title'] = 'AI Podcast Generator';
+        } else if (provider === 'ollama') {
+          const baseUrl = ollamaBaseUrl;
+          if (!/^https?:\/\//i.test(baseUrl)) {
+            return sendJson(res, 400, { error: 'invalid_base_url' });
+          }
+          upstreamUrl = `${baseUrl}/v1/chat/completions`;
+        } else {
+          return sendJson(res, 400, { error: 'unsupported_provider' });
+        }
+
+        try {
+          const upstreamResponse = await fetch(upstreamUrl, {
+            method: 'POST',
+            headers,
             body: JSON.stringify(payload)
           });
 

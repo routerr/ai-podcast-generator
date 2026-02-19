@@ -8,8 +8,11 @@ import ScriptPanel from './components/ScriptPanel';
 import AudioPanel from './components/AudioPanel';
 import { storageService } from './services/storageService';
 import { podcastStorageService } from './services/podcastStorageService';
+import { LLMProvider, SessionConfig } from './types';
+import { getMissingProviderKeys } from './services/llmWorkflowService';
 
 const MAX_API_KEY_LENGTH = 512;
+const LLM_CONFIG_STORAGE_KEY = 'ai_podcast_generator_llm_config';
 
 const normalizeWrapping = (key: string): string => {
   let normalized = key.trim();
@@ -39,10 +42,26 @@ const normalizeBearerApiKey = (key: string): string =>
 const normalizePlainApiKey = (key: string): string => normalizeWrapping(key);
 const sanitizeApiKeyLength = (key: string): string => (key.length <= MAX_API_KEY_LENGTH ? key : '');
 
+const isLlmProvider = (value: string): value is LLMProvider =>
+  value === 'gemini' || value === 'perplexity' || value === 'openrouter' || value === 'ollama';
+
+const normalizeSessionConfig = (config: SessionConfig): SessionConfig => ({
+  ...config,
+  llmPrimaryProvider: isLlmProvider(config.llmPrimaryProvider) ? config.llmPrimaryProvider : 'gemini',
+  llmFallbackProvider:
+    config.llmFallbackProvider === 'none' || isLlmProvider(config.llmFallbackProvider)
+      ? config.llmFallbackProvider
+      : 'perplexity',
+  openrouterModel: normalizePlainApiKey(config.openrouterModel || '') || 'meta-llama/llama-3.3-70b-instruct:free',
+  ollamaModel: normalizePlainApiKey(config.ollamaModel || '') || 'llama3.1:8b',
+  ollamaBaseUrl: normalizePlainApiKey(config.ollamaBaseUrl || '') || 'https://api.ollama.com'
+});
+
 function App() {
   const { 
     currentStep, 
     apiKeys, 
+    config,
     topic,
     podcastState,
     audioState,
@@ -58,10 +77,14 @@ function App() {
   useEffect(() => {
     const storedPerplexityKey = storageService.getApiKey('perplexityKey') || '';
     const storedGeminiKey = storageService.getApiKey('geminiKey') || '';
+    const storedOpenrouterKey = storageService.getApiKey('openrouterKey') || '';
+    const storedOllamaKey = storageService.getApiKey('ollamaKey') || '';
     const storedOpenaiKey = storageService.getApiKey('openaiKey') || '';
 
     const perplexityKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedPerplexityKey));
     const geminiKey = sanitizeApiKeyLength(normalizePlainApiKey(storedGeminiKey));
+    const openrouterKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOpenrouterKey));
+    const ollamaKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOllamaKey));
     const openaiKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOpenaiKey));
 
     if (perplexityKey !== storedPerplexityKey) {
@@ -69,6 +92,12 @@ function App() {
     }
     if (geminiKey !== storedGeminiKey) {
       storageService.saveApiKey('geminiKey', geminiKey);
+    }
+    if (openrouterKey !== storedOpenrouterKey) {
+      storageService.saveApiKey('openrouterKey', openrouterKey);
+    }
+    if (ollamaKey !== storedOllamaKey) {
+      storageService.saveApiKey('ollamaKey', ollamaKey);
     }
     if (openaiKey !== storedOpenaiKey) {
       storageService.saveApiKey('openaiKey', openaiKey);
@@ -79,11 +108,32 @@ function App() {
       payload: {
         perplexityKey,
         geminiKey,
+        openrouterKey,
+        ollamaKey,
         openaiKey
       }
     });
+
+    try {
+      const rawConfig = localStorage.getItem(LLM_CONFIG_STORAGE_KEY);
+      if (rawConfig) {
+        const parsedConfig = JSON.parse(rawConfig) as SessionConfig;
+        dispatch({ type: 'SET_CONFIG', payload: normalizeSessionConfig(parsedConfig) });
+      }
+    } catch (configError) {
+      console.error('Failed to load saved LLM config:', configError);
+    }
+
     setIsApiKeyStateReady(true);
   }, [dispatch]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LLM_CONFIG_STORAGE_KEY, JSON.stringify(config));
+    } catch (configError) {
+      console.error('Failed to persist LLM config:', configError);
+    }
+  }, [config]);
 
   // 初始化時載入已儲存的播客狀態（包含音訊）
   useEffect(() => {
@@ -148,10 +198,11 @@ function App() {
   useEffect(() => {
     if (!isApiKeyStateReady) return;
 
-    if (!apiKeys.perplexityKey || !apiKeys.geminiKey) {
+    const missingProviders = getMissingProviderKeys(apiKeys, config);
+    if (missingProviders.length > 0) {
       setIsApiKeyPanelOpen(true);
     }
-  }, [apiKeys, isApiKeyStateReady]);
+  }, [apiKeys, config, isApiKeyStateReady]);
 
   // 持久化播客狀態，確保重新整理後仍可播放與下載
   useEffect(() => {

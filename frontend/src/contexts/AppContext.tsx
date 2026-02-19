@@ -59,6 +59,8 @@ const initialState: AppState = {
   apiKeys: {
     perplexityKey: '',
     geminiKey: '',
+    openrouterKey: '',
+    ollamaKey: '',
     openaiKey: '' // 新增 OpenAI API 金鑰
   },
   currentStep: 'input',
@@ -68,7 +70,12 @@ const initialState: AppState = {
   config: {
     language: 'en',
     format: 'dialogue',
-    length: 'medium'
+    length: 'medium',
+    llmPrimaryProvider: 'gemini',
+    llmFallbackProvider: 'perplexity',
+    openrouterModel: 'meta-llama/llama-3.3-70b-instruct:free',
+    ollamaModel: 'llama3.1:8b',
+    ollamaBaseUrl: 'https://api.ollama.com'
   },
   podcastState: {
     topic: '',
@@ -150,7 +157,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'RESET_GENERATION_STATE':
       return {
         ...initialState,
-        apiKeys: state.apiKeys
+        apiKeys: state.apiKeys,
+        config: state.config
       };
     
     case 'START_RESEARCH':

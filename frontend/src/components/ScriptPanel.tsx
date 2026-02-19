@@ -2,12 +2,16 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { Dialogue, Script } from '../types';
-import { GeminiService } from '../services/geminiService';
-import { PerplexityService } from '../services/perplexityService';
+import {
+  getMissingProviderKeys,
+  getProviderDisplayName,
+  LlmWorkflowService
+} from '../services/llmWorkflowService';
 
 const ScriptPanel: React.FC = () => {
   const {
     apiKeys,
+    config,
     podcastState,
     isLoading,
     dispatch
@@ -19,10 +23,21 @@ const ScriptPanel: React.FC = () => {
   const [feedback, setFeedback] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const missingProviders = getMissingProviderKeys(apiKeys, config);
+  const hasMissingProviderKeys = missingProviders.length > 0;
 
   const generateScript = useCallback(async () => {
-    if (!podcastState.outline || !podcastState.research || (!apiKeys.geminiKey && !apiKeys.perplexityKey)) {
+    if (!podcastState.outline || !podcastState.research) {
       setError(t('script.error.missingGenerateInfo'));
+      return;
+    }
+
+    if (hasMissingProviderKeys) {
+      setError(
+        t('llm.error.missingProviderKeys', {
+          providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+        })
+      );
       return;
     }
 
@@ -30,39 +45,11 @@ const ScriptPanel: React.FC = () => {
     setError(null);
 
     try {
-      let script: Script;
-      let usedFallback = false;
-
-      if (apiKeys.geminiKey) {
-        try {
-          const geminiService = new GeminiService();
-          script = await geminiService.generatePodcastScript(
-            apiKeys.geminiKey,
-            podcastState.outline,
-            podcastState.research
-          );
-        } catch (geminiError) {
-          const message = geminiError instanceof Error ? geminiError.message : '';
-          const isQuotaLikeError = /429|quota|resource_exhausted|配額/i.test(message);
-          if (!isQuotaLikeError || !apiKeys.perplexityKey) {
-            throw geminiError;
-          }
-
-          const perplexityService = new PerplexityService(apiKeys.perplexityKey);
-          script = await perplexityService.generatePodcastScript(
-            podcastState.outline,
-            podcastState.research
-          );
-          usedFallback = true;
-        }
-      } else {
-        const perplexityService = new PerplexityService(apiKeys.perplexityKey);
-        script = await perplexityService.generatePodcastScript(
-          podcastState.outline,
-          podcastState.research
-        );
-        usedFallback = true;
-      }
+      const workflowService = new LlmWorkflowService({ apiKeys, config });
+      const { result: script, provider, usedFallback } = await workflowService.generatePodcastScript(
+        podcastState.outline,
+        podcastState.research
+      );
 
       dispatch({ type: 'SET_SCRIPT', payload: script });
       dispatch({
@@ -75,8 +62,13 @@ const ScriptPanel: React.FC = () => {
           error: null
         }
       });
+
       if (usedFallback) {
-        setError('Gemini 配額不足，已自動改用 Perplexity 生成腳本。');
+        setError(
+          t('llm.info.fallbackUsed', {
+            provider: getProviderDisplayName(provider)
+          })
+        );
       }
     } catch (err) {
       console.error('Error generating script:', err);
@@ -84,11 +76,29 @@ const ScriptPanel: React.FC = () => {
     } finally {
       setIsGenerating(false);
     }
-  }, [apiKeys.geminiKey, apiKeys.perplexityKey, dispatch, podcastState.outline, podcastState.research, t]);
+  }, [
+    apiKeys,
+    config,
+    dispatch,
+    hasMissingProviderKeys,
+    missingProviders,
+    podcastState.outline,
+    podcastState.research,
+    t
+  ]);
 
   const regenerateSection = useCallback(async (sectionId: string) => {
-    if (!podcastState.script || !podcastState.research || !apiKeys.geminiKey) {
+    if (!podcastState.script || !podcastState.research || !podcastState.outline) {
       setError(t('script.error.missingRegenerateInfo'));
+      return;
+    }
+
+    if (hasMissingProviderKeys) {
+      setError(
+        t('llm.error.missingProviderKeys', {
+          providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+        })
+      );
       return;
     }
 
@@ -96,7 +106,6 @@ const ScriptPanel: React.FC = () => {
     setError(null);
 
     try {
-      const geminiService = new GeminiService();
       const section = podcastState.outline?.sections.find((s) => s.id === sectionId);
 
       if (!section) {
@@ -111,12 +120,15 @@ const ScriptPanel: React.FC = () => {
         `[${d.speaker === 'host' ? '主持人' : '專家'}] ${d.text}`
       ).join('\n');
 
-      const newDialogues = await geminiService.generateSectionDialogue(
-        apiKeys.geminiKey,
-        section,
-        podcastState.research,
-        previousContext
-      );
+      const workflowService = new LlmWorkflowService({ apiKeys, config });
+      const { result: newDialogues }: { result: Dialogue[] } =
+        await workflowService.generateSectionDialogue({
+          outline: podcastState.outline,
+          section,
+          research: podcastState.research,
+          previousContext,
+          currentScript: podcastState.script
+        });
 
       const updatedDialogues = [...podcastState.script.dialogues];
       const sectionStartIndex = updatedDialogues.findIndex((d) =>
@@ -163,11 +175,30 @@ const ScriptPanel: React.FC = () => {
     } finally {
       setIsGenerating(false);
     }
-  }, [apiKeys.geminiKey, dispatch, podcastState.script, podcastState.research, podcastState.outline, t]);
+  }, [
+    apiKeys,
+    config,
+    dispatch,
+    hasMissingProviderKeys,
+    missingProviders,
+    podcastState.outline,
+    podcastState.research,
+    podcastState.script,
+    t
+  ]);
 
   const refineScript = useCallback(async () => {
-    if (!podcastState.script || !apiKeys.geminiKey || !feedback.trim()) {
+    if (!podcastState.script || !podcastState.research || !podcastState.outline || !feedback.trim()) {
       setError(t('script.error.missingRefineInfo'));
+      return;
+    }
+
+    if (hasMissingProviderKeys) {
+      setError(
+        t('llm.error.missingProviderKeys', {
+          providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+        })
+      );
       return;
     }
 
@@ -175,12 +206,13 @@ const ScriptPanel: React.FC = () => {
     setError(null);
 
     try {
-      const geminiService = new GeminiService();
-      const refinedScript = await geminiService.refineScript(
-        apiKeys.geminiKey,
-        podcastState.script,
+      const workflowService = new LlmWorkflowService({ apiKeys, config });
+      const { result: refinedScript }: { result: Script } = await workflowService.refineScript({
+        outline: podcastState.outline,
+        research: podcastState.research,
+        script: podcastState.script,
         feedback
-      );
+      });
 
       dispatch({ type: 'UPDATE_SCRIPT', payload: refinedScript });
       dispatch({
@@ -200,7 +232,18 @@ const ScriptPanel: React.FC = () => {
     } finally {
       setIsGenerating(false);
     }
-  }, [apiKeys.geminiKey, dispatch, podcastState.script, feedback, t]);
+  }, [
+    apiKeys,
+    config,
+    dispatch,
+    feedback,
+    hasMissingProviderKeys,
+    missingProviders,
+    podcastState.outline,
+    podcastState.research,
+    podcastState.script,
+    t
+  ]);
 
   const startEditing = (dialogue: Dialogue) => {
     setEditingDialogueId(dialogue.id);
@@ -248,10 +291,16 @@ const ScriptPanel: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!podcastState.script && podcastState.outline && podcastState.research && (apiKeys.geminiKey || apiKeys.perplexityKey)) {
+    if (!podcastState.script && podcastState.outline && podcastState.research && !hasMissingProviderKeys) {
       generateScript();
     }
-  }, [generateScript, podcastState.script, podcastState.outline, podcastState.research, apiKeys.geminiKey, apiKeys.perplexityKey]);
+  }, [
+    generateScript,
+    hasMissingProviderKeys,
+    podcastState.outline,
+    podcastState.research,
+    podcastState.script
+  ]);
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -282,9 +331,9 @@ const ScriptPanel: React.FC = () => {
         <div className="mb-8">
           <button
             onClick={generateScript}
-            disabled={isGenerating || (!apiKeys.geminiKey && !apiKeys.perplexityKey)}
+            disabled={isGenerating || hasMissingProviderKeys}
             className={`px-6 py-3 rounded-lg font-medium transition-all ${
-              isGenerating || (!apiKeys.geminiKey && !apiKeys.perplexityKey)
+              isGenerating || hasMissingProviderKeys
                 ? 'espresso-btn-secondary cursor-not-allowed opacity-70'
                 : 'espresso-btn-primary'
             }`}
@@ -302,9 +351,11 @@ const ScriptPanel: React.FC = () => {
             )}
           </button>
 
-          {!apiKeys.geminiKey && !apiKeys.perplexityKey && (
+          {hasMissingProviderKeys && (
             <p className="mt-2 text-sm text-[#f9e2af]">
-              請先設定 Gemini 或 Perplexity API Key 以生成腳本。
+              {t('llm.error.missingProviderKeys', {
+                providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+              })}
             </p>
           )}
         </div>

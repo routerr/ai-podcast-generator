@@ -67,6 +67,8 @@ export const useApiKeys = () => {
   const [apiKeys, setApiKeys] = useState<ApiKeys>({
     perplexityKey: '',
     geminiKey: '',
+    openrouterKey: '',
+    ollamaKey: '',
     openaiKey: ''
   });
 
@@ -197,6 +199,8 @@ export const useApiKeys = () => {
   useEffect(() => {
     const storedPerplexityKey = storageService.getApiKey('perplexityKey') || '';
     const storedGeminiKey = storageService.getApiKey('geminiKey') || '';
+    const storedOpenrouterKey = storageService.getApiKey('openrouterKey') || '';
+    const storedOllamaKey = storageService.getApiKey('ollamaKey') || '';
     const storedOpenaiKey = storageService.getApiKey('openaiKey') || '';
     const storedPerplexityValid = storageService.getApiKeyStatus('perplexityValid');
     const storedGeminiValid = storageService.getApiKeyStatus('geminiValid');
@@ -204,6 +208,8 @@ export const useApiKeys = () => {
 
     const perplexityKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedPerplexityKey));
     const geminiKey = sanitizeApiKeyLength(trimApiKey(storedGeminiKey));
+    const openrouterKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOpenrouterKey));
+    const ollamaKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOllamaKey));
     const openaiKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOpenaiKey));
 
     if (perplexityKey !== storedPerplexityKey) {
@@ -212,6 +218,12 @@ export const useApiKeys = () => {
     if (geminiKey !== storedGeminiKey) {
       storageService.saveApiKey('geminiKey', geminiKey);
     }
+    if (openrouterKey !== storedOpenrouterKey) {
+      storageService.saveApiKey('openrouterKey', openrouterKey);
+    }
+    if (ollamaKey !== storedOllamaKey) {
+      storageService.saveApiKey('ollamaKey', ollamaKey);
+    }
     if (openaiKey !== storedOpenaiKey) {
       storageService.saveApiKey('openaiKey', openaiKey);
     }
@@ -219,6 +231,8 @@ export const useApiKeys = () => {
     setApiKeys({
       perplexityKey,
       geminiKey,
+      openrouterKey,
+      ollamaKey,
       openaiKey
     });
 
@@ -279,11 +293,31 @@ export const useApiKeys = () => {
     setKeyErrors((prev) => ({ ...prev, openaiError: null }));
   };
 
+  const saveOpenrouterKey = (key: string) => {
+    const normalizedKey = sanitizeApiKeyLength(normalizeBearerApiKey(key));
+    storageService.saveApiKey('openrouterKey', normalizedKey);
+    setApiKeys((prev: ApiKeys) => ({
+      ...prev,
+      openrouterKey: normalizedKey
+    }));
+  };
+
+  const saveOllamaKey = (key: string) => {
+    const normalizedKey = sanitizeApiKeyLength(normalizeBearerApiKey(key));
+    storageService.saveApiKey('ollamaKey', normalizedKey);
+    setApiKeys((prev: ApiKeys) => ({
+      ...prev,
+      ollamaKey: normalizedKey
+    }));
+  };
+
   const clearAllKeys = () => {
     storageService.clearAllApiKeys();
     setApiKeys({
       perplexityKey: '',
       geminiKey: '',
+      openrouterKey: '',
+      ollamaKey: '',
       openaiKey: ''
     });
     setAndPersistKeyStatus(() => ({
@@ -435,6 +469,8 @@ export const useApiKeys = () => {
     keyErrors,
     savePerplexityKey,
     saveGeminiKey,
+    saveOpenrouterKey,
+    saveOllamaKey,
     saveOpenaiKey,
     clearAllKeys,
     markPerplexityKeyEdited,

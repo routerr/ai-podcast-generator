@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
-import { PerplexityService } from '../services/perplexityService';
 import { Outline, OutlineSection } from '../types';
+import {
+  getMissingProviderKeys,
+  getProviderDisplayName,
+  LlmWorkflowService
+} from '../services/llmWorkflowService';
 
 const OutlinePanel: React.FC = () => {
   const {
     apiKeys,
+    config,
     podcastState,
     isLoading,
     error,
@@ -33,8 +38,13 @@ const OutlinePanel: React.FC = () => {
       return;
     }
 
-    if (!apiKeys.perplexityKey) {
-      setLocalError(t('outline.error.missingPerplexity'));
+    const missingProviders = getMissingProviderKeys(apiKeys, config);
+    if (missingProviders.length > 0) {
+      setLocalError(
+        t('llm.error.missingProviderKeys', {
+          providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+        })
+      );
       return;
     }
 
@@ -44,8 +54,8 @@ const OutlinePanel: React.FC = () => {
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'SET_ERROR', payload: null });
 
-      const perplexityService = new PerplexityService(apiKeys.perplexityKey);
-      const result: Outline = await perplexityService.generateOutline(podcastState.research);
+      const workflowService = new LlmWorkflowService({ apiKeys, config });
+      const { result }: { result: Outline } = await workflowService.generateOutline(podcastState.research);
 
       setOutline(result);
       dispatch({
@@ -83,8 +93,13 @@ const OutlinePanel: React.FC = () => {
       return;
     }
 
-    if (!apiKeys.perplexityKey) {
-      setLocalError(t('outline.error.missingPerplexity'));
+    const missingProviders = getMissingProviderKeys(apiKeys, config);
+    if (missingProviders.length > 0) {
+      setLocalError(
+        t('llm.error.missingProviderKeys', {
+          providers: missingProviders.map((provider) => getProviderDisplayName(provider)).join(', ')
+        })
+      );
       return;
     }
 
@@ -99,8 +114,8 @@ const OutlinePanel: React.FC = () => {
         summary: `${podcastState.research!.summary}\n\n${t('outline.currentOutline')}:\n${outline.title}\n${outline.description}\n${outline.sections.map((s) => `- ${s.title}`).join('\n')}`
       };
 
-      const perplexityService = new PerplexityService(apiKeys.perplexityKey);
-      const result: Outline = await perplexityService.generateOutline(researchWithOutline);
+      const workflowService = new LlmWorkflowService({ apiKeys, config });
+      const { result }: { result: Outline } = await workflowService.generateOutline(researchWithOutline);
 
       setOutline(result);
       dispatch({

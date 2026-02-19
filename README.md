@@ -1,166 +1,142 @@
-# 🎙️ AI Podcast Generator
+# AI Podcast Generator
 
-A browser-only alternative to Google's NotebookLM Audio Overview feature. Generate AI-powered podcasts from any topic with deep web research, natural dialogue scripts, and high-quality text-to-speech - all running directly in your browser.
+Create a full podcast pipeline from a single topic:
+research -> outline -> script -> audio.
 
-## ✨ Features
+This project is **frontend-first** (React + Vite) with **thin proxy/serverless API routes** to avoid browser CORS issues and keep API keys out of direct third-party browser requests.
 
-- **🔍 Deep Research**: AI agents search the web to gather comprehensive information on your topic
-- **🎭 Two Formats**: Single narrator or engaging host-expert dialogue
-- **🌍 Multilingual**: English and Traditional Chinese (繁體中文) support
-- **⏱️ Flexible Length**: Generate short (5 min), medium (15 min), or long (30 min) podcasts
-- **🎤 Natural TTS**: High-quality text-to-speech using Edge TTS (free) or OpenAI TTS
-- **🔒 Privacy First**: All processing happens in your browser - your data never leaves your machine
-- **🌐 Browser-Only**: No server setup required - just open in any modern browser
+## Features
 
-## 🏗️ Architecture
+- Topic-to-podcast workflow in 4 steps:
+  - Research
+  - Outline
+  - Script
+  - Audio
+- Multi-provider LLM routing with primary + fallback:
+  - Google Gemini
+  - Perplexity
+  - OpenRouter
+  - Ollama (OpenAI-compatible endpoint)
+- Provider settings in UI:
+  - Primary provider
+  - Fallback provider
+  - OpenRouter model
+  - Ollama model + base URL
+- API key validation and status persistence in browser storage
+- Script editing and section-level regeneration
+- Audio output:
+  - Browser preview via Web Speech API
+  - Downloadable audio via OpenAI TTS
+- UI language support:
+  - English
+  - Japanese
+  - Simplified Chinese
+  - Traditional Chinese
 
+## Architecture
+
+```text
+React/Vite frontend
+  -> local proxy middleware (during dev)
+  -> /api/* serverless routes (during deploy)
+  -> upstream providers (Gemini / Perplexity / OpenRouter / Ollama / OpenAI)
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                   Frontend (React + Browser APIs)               │
-│  Topic Input → Q&A Flow → Research → Script → TTS → Audio      │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│   Web LLM     │   │   Web Search    │   │   Web TTS       │
-│ (Gemini/      │   │ (Perplexity/    │   │ (Edge TTS /     │
-│  OpenAI)      │   │  Google)        │   │  OpenAI TTS)    │
-└───────────────┘   └─────────────────┘   └─────────────────┘
-```
 
-## 🚀 Quick Start
+Key proxy/serverless routes:
 
-### Prerequisites
+- Perplexity
+  - `/pplx/validate` / `/api/perplexity/validate`
+  - `/pplx/search` / `/api/perplexity/search`
+  - `/pplx/chat` / `/api/perplexity/chat`
+- Gemini
+  - `/gemini/validate` / `/api/gemini/validate`
+  - `/gemini/generate` / `/api/gemini/generate`
+- OpenAI
+  - `/openai/validate` / `/api/openai/validate`
+  - `/openai/speech` / `/api/openai/speech`
+- OpenAI-compatible providers (OpenRouter/Ollama)
+  - `/llm/chat` / `/api/llm/chat`
 
-- Node.js 18+
-- Modern web browser (Chrome, Firefox, Safari, Edge)
+## Local Development
 
-### Option 1: Deploy to Vercel (Recommended for public access)
+> There is no root-level `dev` script. Run commands in `frontend/`.
 
-1. Fork this repository
-2. Connect your fork to [Vercel](https://vercel.com/)
-3. Configure environment variables in Vercel dashboard:
-   - `VITE_PERPLEXITY_API_KEY` (optional but recommended)
-   - `VITE_OPENAI_API_KEY` (for OpenAI TTS)
-   - `VITE_GEMINI_API_KEY` (for Gemini models)
-4. Deploy!
-
-### Option 2: Run Locally
+### Option A: Bun
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/ai-podcast-generator.git
-cd ai-podcast-generator
-
-# Navigate to frontend
 cd frontend
+bun install
+bun run dev
+```
 
-# Install dependencies
+### Option B: npm
+
+```bash
+cd frontend
 npm install
-
-# Run development server
 npm run dev
-
-# Open your browser to http://localhost:3000
 ```
 
-### Option 3: Static Deployment
+Default dev URL:
 
-Build the app for production and deploy the static files to any static hosting service:
+- [http://localhost:5173](http://localhost:5173)
+
+### Production Build (local)
 
 ```bash
 cd frontend
-npm install
-npm run build
-
-# The built files will be in dist/
-# Upload these files to your static hosting provider
+bun run build
+# or: npm run build
 ```
 
-## ⚙️ Configuration
+## Deployment
 
-### Environment Variables
+### Recommended: Vercel
 
-Since this is now a browser-only application, API keys are stored in the browser's localStorage and never sent to any server.
+This repository includes:
 
-For deployments, you can optionally set these environment variables:
+- Vite frontend (`frontend/`)
+- Serverless API routes (`api/`)
 
-| Variable | Description |
-|----------|-------------|
-| `VITE_PERPLEXITY_API_KEY` | Perplexity API key (recommended for best research) |
-| `VITE_OPENAI_API_KEY` | OpenAI API key (for OpenAI TTS) |
-| `VITE_GEMINI_API_KEY` | Google Gemini API key (for Gemini models) |
+Deploy from repository root to keep both frontend and API routes working.
 
-Note: Users can also enter their own API keys directly in the application interface.
+### Important
 
-### Recommended Models
+Pure static hosting without equivalent serverless/proxy routes will break key parts of provider integration (especially where CORS/proxy behavior is required).
 
-| Use Case | Provider | Model |
-|----------|----------|-------|
-| General purpose | Perplexity | `sonar-pro` |
-| Best quality research | Perplexity | `sonar-deep-research` |
-| Free alternative | Google | `gemini-pro` |
-| Best for Chinese | Google | `gemini-pro` |
+## API Keys and Provider Setup
 
-## 🎨 Workflow
+Configure keys in **API Key Settings** in the app:
 
-1. **Topic Input**: User enters a topic (e.g., "How does blockchain work?")
-2. **Clarifying Questions**: AI asks 3-5 questions to understand the user's needs
-3. **Configuration**: User selects language, format, and length
-4. **Deep Research**: AI searches the web for relevant information (5-10 min)
-5. **Script Generation**: AI creates an engaging podcast script
-6. **Audio Synthesis**: TTS converts the script to natural-sounding audio
-7. **Delivery**: User can play or download the podcast
+- Perplexity key
+- Gemini key
+- OpenRouter key
+- Ollama key (optional when using localhost Ollama base URL)
+- OpenAI key (required for downloadable audio generation)
 
-## 🔧 Development
+Provider routing behavior:
 
-```bash
-# Navigate to frontend
-cd frontend
+- Primary provider is used first for research/outline/script operations.
+- If it fails, fallback provider is attempted (if configured).
 
-# Install dependencies
-npm install
+## Workflow
 
-# Run development server
-npm run dev
+1. Enter topic on landing page.
+2. Run research.
+3. Generate/refine outline.
+4. Generate/refine script.
+5. Generate audio (OpenAI TTS for downloadable file, Web Speech for preview).
 
-# Build for production
-npm run build
+## Repository Structure
+
+```text
+api/                  # deploy-time serverless routes
+frontend/             # React + Vite frontend
+CHANGELOG.md          # release notes
+DEPLOY.md             # deployment guide
+REFACTOR_ARCHITECTURE.md  # historical architecture refactor doc
 ```
 
-## 📊 Performance Notes
+## License
 
-- **Research**: 5-10 minutes depending on topic complexity
-- **Script Generation**: 1-3 minutes for 30-minute podcast
-- **Audio Generation**: ~1 minute per 5 minutes of audio (Edge TTS)
-- **Total Time**: 10-20 minutes for a 30-minute podcast
-
-## 🗺️ Roadmap
-
-- [ ] Background music and sound effects
-- [ ] Multiple voice options per language
-- [ ] Podcast RSS feed generation
-- [ ] Transcript editing before audio generation
-- [ ] Source citation in audio
-- [ ] Multi-episode series generation
-- [ ] Export to podcast platforms
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📄 License
-
-MIT License - feel free to use this project for personal or commercial purposes.
-
-## 🙏 Acknowledgments
-
-- [Edge TTS](https://github.com/rany2/edge-tts) for free text-to-speech
-- [Perplexity](https://perplexity.ai/) for AI-powered deep research with real-time web search
-- [Google Gemini](https://gemini.google.com/) for powerful web-based LLM
-- [OpenAI](https://openai.com/) for advanced TTS capabilities
-
----
-
-Made with ❤️ for the open-source community
+MIT

@@ -2,8 +2,13 @@
 export interface ApiKeys {
   perplexityKey: string;
   geminiKey: string;
+  openrouterKey?: string;
+  ollamaKey?: string;
   openaiKey?: string; // 新增 OpenAI API 金鑰 (可選)
 }
+
+export type LLMProvider = 'gemini' | 'perplexity' | 'openrouter' | 'ollama';
+export type LLMFallbackProvider = LLMProvider | 'none';
 
 // UI 語言
 export type UILanguage = 'en' | 'ja' | 'zh-CN' | 'zh-TW';
@@ -88,6 +93,11 @@ export interface SessionConfig {
   language: UILanguage;
   format: 'solo' | 'dialogue';
   length: 'short' | 'medium' | 'long';
+  llmPrimaryProvider: LLMProvider;
+  llmFallbackProvider: LLMFallbackProvider;
+  openrouterModel: string;
+  ollamaModel: string;
+  ollamaBaseUrl: string;
 }
 
 // 新增音訊狀態介面
