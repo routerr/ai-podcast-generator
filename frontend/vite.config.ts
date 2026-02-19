@@ -125,22 +125,11 @@ const providerProxyMiddlewarePlugin = () => ({
       }
 
       if (path === '/pplx/validate') {
-        const testSearch = async () =>
-          fetch(PERPLEXITY_SEARCH_API_URL, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              query: 'Return only OK.',
-              max_results: 1,
-              max_tokens_per_page: 64
-            })
-          });
-
-        const testChat = async () =>
-          fetch(PERPLEXITY_CHAT_API_URL, {
+        // Validate using Chat API only. The Search API (/search) requires a
+        // separate plan and reliably returns 401 even for valid keys, making it
+        // unsuitable as the primary validation signal.
+        try {
+          const chatResponse = await fetch(PERPLEXITY_CHAT_API_URL, {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${apiKey}`,
@@ -148,40 +137,10 @@ const providerProxyMiddlewarePlugin = () => ({
             },
             body: JSON.stringify({
               model: 'sonar',
-              messages: [
-                {
-                  role: 'user',
-                  content: 'Reply with OK.'
-                }
-              ],
+              messages: [{ role: 'user', content: 'Reply with OK.' }],
               max_tokens: 16
             })
           });
-
-        let searchResponse: Response | null = null;
-        let searchText = '';
-
-        try {
-          searchResponse = await testSearch();
-          searchText = await searchResponse.text();
-        } catch {
-          searchResponse = null;
-        }
-
-        if (searchResponse && searchResponse.ok) {
-          return sendJson(res, 200, { valid: true });
-        }
-
-        if (searchResponse && isPerplexityExplicitInvalidKey(searchText)) {
-          return sendJson(res, 200, { valid: false, error: 'explicit_invalid_api_key' });
-        }
-
-        if (searchResponse && !isPerplexityAmbiguousAuth(searchResponse.status)) {
-          return sendJson(res, 200, { valid: true });
-        }
-
-        try {
-          const chatResponse = await testChat();
           const chatText = await chatResponse.text();
 
           if (chatResponse.ok) {
@@ -192,20 +151,16 @@ const providerProxyMiddlewarePlugin = () => ({
             return sendJson(res, 200, { valid: false, error: 'explicit_invalid_api_key' });
           }
 
-          if (isPerplexityAmbiguousAuth(chatResponse.status)) {
-            return sendJson(res, 200, { valid: null, error: 'upstream_auth_ambiguous' });
+          // Non-auth errors (429 rate limit, 500 server error, etc.) still
+          // indicate the key passed the auth layer — treat as valid.
+          if (!isPerplexityAmbiguousAuth(chatResponse.status)) {
+            return sendJson(res, 200, { valid: true });
           }
 
-          return sendJson(res, 200, { valid: true });
+          // 401/403 without an explicit "invalid key" message is ambiguous
+          // (WAF, plan restrictions, transient upstream issues).
+          return sendJson(res, 200, { valid: null, error: 'upstream_auth_ambiguous' });
         } catch {
-          if (searchResponse && isPerplexityExplicitInvalidKey(searchText)) {
-            return sendJson(res, 200, { valid: false, error: 'explicit_invalid_api_key' });
-          }
-
-          if (searchResponse && isPerplexityAmbiguousAuth(searchResponse.status)) {
-            return sendJson(res, 200, { valid: null, error: 'upstream_auth_ambiguous' });
-          }
-
           return sendJson(res, 200, { valid: null, error: 'upstream_unreachable' });
         }
       }

@@ -1,4 +1,3 @@
-const PERPLEXITY_SEARCH_API_URL = 'https://api.perplexity.ai/search';
 const PERPLEXITY_CHAT_API_URL = 'https://api.perplexity.ai/chat/completions';
 const MAX_PERPLEXITY_API_KEY_LENGTH = 512;
 
@@ -71,22 +70,11 @@ async function handler(req, res) {
     return res.status(400).json({ valid: false, error: 'missing_or_invalid_api_key' });
   }
 
-  const testSearch = async () =>
-    fetch(PERPLEXITY_SEARCH_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        query: 'Return only OK.',
-        max_results: 1,
-        max_tokens_per_page: 64
-      })
-    });
-
-  const testChat = async () =>
-    fetch(PERPLEXITY_CHAT_API_URL, {
+  // Validate using Chat API only. The Search API (/search) requires a
+  // separate plan and reliably returns 401 even for valid keys, making it
+  // unsuitable as the primary validation signal.
+  try {
+    const chatResponse = await fetch(PERPLEXITY_CHAT_API_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -94,42 +82,10 @@ async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'sonar',
-        messages: [
-          {
-            role: 'user',
-            content: 'Reply with OK.'
-          }
-        ],
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
         max_tokens: 16
       })
     });
-
-  let searchResponse = null;
-  let searchText = '';
-
-  try {
-    searchResponse = await testSearch();
-    searchText = await searchResponse.text();
-  } catch {
-    searchResponse = null;
-  }
-
-  if (searchResponse && searchResponse.ok) {
-    return res.status(200).json({ valid: true });
-  }
-
-  if (searchResponse && isExplicitInvalidKey(searchText)) {
-    return res.status(200).json({ valid: false, error: 'explicit_invalid_api_key' });
-  }
-
-  if (searchResponse && !isAmbiguousAuth(searchResponse.status)) {
-    // Non-auth errors (rate limit, plan limits, transient upstream issues)
-    // still indicate the key was accepted by the auth layer.
-    return res.status(200).json({ valid: true });
-  }
-
-  try {
-    const chatResponse = await testChat();
     const chatText = await chatResponse.text();
 
     if (chatResponse.ok) {
@@ -140,20 +96,16 @@ async function handler(req, res) {
       return res.status(200).json({ valid: false, error: 'explicit_invalid_api_key' });
     }
 
-    if (isAmbiguousAuth(chatResponse.status)) {
-      return res.status(200).json({ valid: null, error: 'upstream_auth_ambiguous' });
+    // Non-auth errors (429 rate limit, 500 server error, etc.) still
+    // indicate the key passed the auth layer — treat as valid.
+    if (!isAmbiguousAuth(chatResponse.status)) {
+      return res.status(200).json({ valid: true });
     }
 
-    return res.status(200).json({ valid: true });
+    // 401/403 without an explicit "invalid key" message is ambiguous
+    // (WAF, plan restrictions, transient upstream issues).
+    return res.status(200).json({ valid: null, error: 'upstream_auth_ambiguous' });
   } catch {
-    if (searchResponse && isExplicitInvalidKey(searchText)) {
-      return res.status(200).json({ valid: false, error: 'explicit_invalid_api_key' });
-    }
-
-    if (searchResponse && isAmbiguousAuth(searchResponse.status)) {
-      return res.status(200).json({ valid: null, error: 'upstream_auth_ambiguous' });
-    }
-
     return res.status(200).json({ valid: null, error: 'upstream_unreachable' });
   }
 }
