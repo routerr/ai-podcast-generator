@@ -32,3 +32,4 @@ arxiv_cache/
 # Archives
 *.zip
 *.tar.gz
+.vercel

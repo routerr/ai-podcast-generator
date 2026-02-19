@@ -6,35 +6,222 @@ import ResearchPanel from './components/ResearchPanel';
 import OutlinePanel from './components/OutlinePanel';
 import ScriptPanel from './components/ScriptPanel';
 import AudioPanel from './components/AudioPanel';
+import { storageService } from './services/storageService';
+import { podcastStorageService } from './services/podcastStorageService';
+
+const MAX_API_KEY_LENGTH = 512;
+
+const normalizeWrapping = (key: string): string => {
+  let normalized = key.trim();
+
+  while (normalized.length >= 2) {
+    const firstChar = normalized[0];
+    const lastChar = normalized[normalized.length - 1];
+    const isMatchingQuotePair =
+      (firstChar === '"' && lastChar === '"') ||
+      (firstChar === '\'' && lastChar === '\'') ||
+      (firstChar === '`' && lastChar === '`');
+
+    if (!isMatchingQuotePair) {
+      break;
+    }
+
+    normalized = normalized.slice(1, -1).trim();
+  }
+
+  return normalized;
+};
+
+const normalizeBearerApiKey = (key: string): string =>
+  normalizeWrapping(key)
+    .replace(/^Bearer\s+/i, '')
+    .replace(/\s+/g, '');
+const normalizePlainApiKey = (key: string): string => normalizeWrapping(key);
+const sanitizeApiKeyLength = (key: string): string => (key.length <= MAX_API_KEY_LENGTH ? key : '');
 
 function App() {
   const { 
     currentStep, 
     apiKeys, 
+    topic,
+    podcastState,
+    audioState,
     error, 
     dispatch 
   } = useAppContext();
   
   const [isApiKeyPanelOpen, setIsApiKeyPanelOpen] = React.useState(false);
+  const [isApiKeyStateReady, setIsApiKeyStateReady] = React.useState(false);
+  const [isPodcastStateHydrated, setIsPodcastStateHydrated] = React.useState(false);
+
+  // 初始化時載入已儲存的 API 金鑰到 AppContext
+  useEffect(() => {
+    const storedPerplexityKey = storageService.getApiKey('perplexityKey') || '';
+    const storedGeminiKey = storageService.getApiKey('geminiKey') || '';
+    const storedOpenaiKey = storageService.getApiKey('openaiKey') || '';
+
+    const perplexityKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedPerplexityKey));
+    const geminiKey = sanitizeApiKeyLength(normalizePlainApiKey(storedGeminiKey));
+    const openaiKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedOpenaiKey));
+
+    if (perplexityKey !== storedPerplexityKey) {
+      storageService.saveApiKey('perplexityKey', perplexityKey);
+    }
+    if (geminiKey !== storedGeminiKey) {
+      storageService.saveApiKey('geminiKey', geminiKey);
+    }
+    if (openaiKey !== storedOpenaiKey) {
+      storageService.saveApiKey('openaiKey', openaiKey);
+    }
+
+    dispatch({
+      type: 'SET_API_KEYS',
+      payload: {
+        perplexityKey,
+        geminiKey,
+        openaiKey
+      }
+    });
+    setIsApiKeyStateReady(true);
+  }, [dispatch]);
+
+  // 初始化時載入已儲存的播客狀態（包含音訊）
+  useEffect(() => {
+    let isCancelled = false;
+    let hydratedAudioUrl: string | null = null;
+
+    const hydratePodcastState = async () => {
+      try {
+        const snapshot = await podcastStorageService.load();
+
+        if (!snapshot || isCancelled) {
+          return;
+        }
+
+        dispatch({ type: 'SET_TOPIC', payload: snapshot.topic });
+        dispatch({
+          type: 'UPDATE_PODCAST_STATE',
+          payload: {
+            topic: snapshot.topic,
+            research: snapshot.research,
+            outline: snapshot.outline,
+            script: snapshot.script
+          }
+        });
+
+        if (snapshot.audioBlob) {
+          hydratedAudioUrl = URL.createObjectURL(snapshot.audioBlob);
+          dispatch({
+            type: 'SET_AUDIO_STATE',
+            payload: {
+              audioBlob: snapshot.audioBlob,
+              audioUrl: hydratedAudioUrl,
+              duration: snapshot.audioDuration,
+              error: null
+            }
+          });
+        }
+
+        dispatch({ type: 'SET_CURRENT_STEP', payload: snapshot.currentStep });
+      } catch (loadError) {
+        console.error('Failed to hydrate persisted podcast state:', loadError);
+      } finally {
+        if (!isCancelled) {
+          setIsPodcastStateHydrated(true);
+        } else if (hydratedAudioUrl) {
+          URL.revokeObjectURL(hydratedAudioUrl);
+        }
+      }
+    };
+
+    hydratePodcastState();
+
+    return () => {
+      isCancelled = true;
+      if (hydratedAudioUrl) {
+        URL.revokeObjectURL(hydratedAudioUrl);
+      }
+    };
+  }, [dispatch]);
 
   // 檢查 API 金鑰是否存在
   useEffect(() => {
+    if (!isApiKeyStateReady) return;
+
     if (!apiKeys.perplexityKey || !apiKeys.geminiKey) {
       setIsApiKeyPanelOpen(true);
     }
-  }, [apiKeys]);
+  }, [apiKeys, isApiKeyStateReady]);
+
+  // 持久化播客狀態，確保重新整理後仍可播放與下載
+  useEffect(() => {
+    if (!isPodcastStateHydrated) {
+      return;
+    }
+
+    const hasPersistableContent = Boolean(
+      topic ||
+      podcastState.research ||
+      podcastState.outline ||
+      podcastState.script ||
+      audioState.audioBlob
+    );
+
+    if (!hasPersistableContent) {
+      podcastStorageService.clear().catch((clearError) => {
+        console.error('Failed to clear persisted podcast state:', clearError);
+      });
+      return;
+    }
+
+    podcastStorageService.save({
+      currentStep,
+      topic,
+      research: podcastState.research,
+      outline: podcastState.outline,
+      script: podcastState.script,
+      audioBlob: audioState.audioBlob,
+      audioDuration: audioState.duration
+    }).catch((saveError) => {
+      console.error('Failed to persist podcast state:', saveError);
+    });
+  }, [
+    audioState.audioBlob,
+    audioState.duration,
+    currentStep,
+    isPodcastStateHydrated,
+    podcastState.outline,
+    podcastState.research,
+    podcastState.script,
+    topic
+  ]);
 
   const closeApiKeyPanel = () => {
     setIsApiKeyPanelOpen(false);
+  };
+
+  const openApiKeyPanel = () => {
+    setIsApiKeyPanelOpen(true);
   };
 
   const clearError = () => {
     dispatch({ type: 'SET_ERROR', payload: null });
   };
 
+  const goToLandingPage = () => {
+    if (audioState.audioUrl) {
+      URL.revokeObjectURL(audioState.audioUrl);
+    }
+
+    dispatch({ type: 'RESET_GENERATION_STATE' });
+    podcastStorageService.clear().catch((clearError) => {
+      console.error('Failed to clear persisted podcast state:', clearError);
+    });
+  };
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
-      <Header />
+    <div className="min-h-screen espresso-shell">
+      <Header onApiKeyClick={openApiKeyPanel} onHomeClick={goToLandingPage} />
       
       {isApiKeyPanelOpen && (
         <ApiKeyPanel 
@@ -45,12 +232,12 @@ function App() {
       
       {error && (
         <div className="fixed top-20 right-4 z-50">
-          <div className="mb-6 p-4 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200">
+          <div className="mb-6 p-4 rounded-xl espresso-error">
             <div className="flex justify-between items-center">
               <span>{error}</span>
               <button 
                 onClick={clearError}
-                className="text-red-200 hover:text-white transition-colors"
+                className="espresso-muted hover:text-white transition-colors"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
@@ -62,22 +249,7 @@ function App() {
       )}
       
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {currentStep === 'input' && (
-          <div className="max-w-4xl mx-auto p-6">
-            <div className="bg-white/5 rounded-2xl p-8 border border-white/10 text-center">
-              <h2 className="text-2xl font-bold mb-4">主題輸入</h2>
-              <p className="text-slate-400 mb-6">此功能將在後續版本中實現</p>
-              <button 
-                onClick={() => dispatch({ type: 'SET_CURRENT_STEP', payload: 'research' })}
-                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-all"
-              >
-                前往研究
-              </button>
-            </div>
-          </div>
-        )}
-        
-        {currentStep === 'research' && <ResearchPanel />}
+        {(currentStep === 'input' || currentStep === 'research') && <ResearchPanel />}
         
         {currentStep === 'outline' && <OutlinePanel />}
         

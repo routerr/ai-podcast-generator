@@ -5,6 +5,9 @@ export interface ApiKeys {
   openaiKey?: string; // 新增 OpenAI API 金鑰 (可選)
 }
 
+// UI 語言
+export type UILanguage = 'en' | 'ja' | 'zh-CN' | 'zh-TW';
+
 // 研究結果介面
 export interface ResearchResult {
   topic: string;
@@ -82,7 +85,7 @@ export interface Question {
 
 // 會話配置介面 (與現有程式碼保持一致)
 export interface SessionConfig {
-  language: 'en' | 'zh-TW';
+  language: UILanguage;
   format: 'solo' | 'dialogue';
   length: 'short' | 'medium' | 'long';
 }

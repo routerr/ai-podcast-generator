@@ -184,12 +184,13 @@ export class AudioService {
   private floatTo16BitPCM(view: DataView, offset: number, audioBuffer: AudioBuffer): void {
     const length = audioBuffer.length;
     const numberOfChannels = audioBuffer.numberOfChannels;
-    
-    for (let channel = 0; channel < numberOfChannels; channel++) {
-      const channelData = audioBuffer.getChannelData(channel);
-      for (let i = 0; i < length; i++) {
+
+    // WAV PCM needs interleaved channel samples: frame0(ch1,ch2), frame1(ch1,ch2), ...
+    for (let i = 0; i < length; i++) {
+      for (let channel = 0; channel < numberOfChannels; channel++) {
+        const channelData = audioBuffer.getChannelData(channel);
         const sample = Math.max(-1, Math.min(1, channelData[i]));
-        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
         offset += 2;
       }
     }

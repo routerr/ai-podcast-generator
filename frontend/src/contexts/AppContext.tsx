@@ -44,6 +44,7 @@ export type AppAction =
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'SET_ERROR'; payload: string | null }
   | { type: 'RESET' }
+  | { type: 'RESET_GENERATION_STATE' }
   | { type: 'START_RESEARCH'; payload: { topic: string } }
   | { type: 'SET_RESEARCH_RESULT'; payload: ResearchResult }
   | { type: 'GENERATE_OUTLINE'; payload: ResearchResult }
@@ -145,6 +146,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
     
     case 'RESET':
       return initialState;
+
+    case 'RESET_GENERATION_STATE':
+      return {
+        ...initialState,
+        apiKeys: state.apiKeys
+      };
     
     case 'START_RESEARCH':
       return {

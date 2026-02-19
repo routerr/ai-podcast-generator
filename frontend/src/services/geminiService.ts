@@ -3,129 +3,483 @@
  * 實現與 Google Gemini API 的整合，用於生成對話式播客腳本
  */
 
-import { Outline, ResearchResult, Script, Dialogue, ScriptSection, OutlineSection } from '../types';
+import { Dialogue, Outline, OutlineSection, ResearchResult, Script, ScriptSection } from '../types';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const GEMINI_MODEL = 'gemini-1.5-flash';
+const LOCAL_GEMINI_GENERATE_ENDPOINT = '/gemini/generate';
+const DEPLOY_GEMINI_GENERATE_ENDPOINT = '/api/gemini/generate';
+const GEMINI_MODEL = 'gemini-1.5-flash-latest';
+const MAX_API_KEY_LENGTH = 512;
 
-export class GeminiService {
-  constructor() {
-    // 不再需要儲存 apiKey，因為每個方法都會接收 apiKey 參數
+type JsonRecord = Record<string, unknown>;
+
+const safeString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+
+const safeNumber = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const countWords = (text: string): number => {
+  const latinWords = text.trim().split(/\s+/).filter(Boolean).length;
+  const cjkChars = (text.match(/[\u3040-\u30ff\u3400-\u9fff]/g) || []).length;
+  const cjkWordEstimate = Math.ceil(cjkChars / 2);
+  return Math.max(latinWords, cjkWordEstimate, 1);
+};
+
+const normalizeSpeaker = (value: unknown): 'host' | 'expert' | null => {
+  if (typeof value !== 'string') {
+    return null;
   }
 
-  /**
-   * 生成對話腳本
-   * @param apiKey API 金鑰
-   * @param outline 大綱
-   * @param research 研究結果
-   * @returns 對話腳本
-   */
-  async generatePodcastScript(
-    apiKey: string,
-    outline: Outline,
-    research: ResearchResult
-  ): Promise<Script> {
+  const normalized = value.trim().toLowerCase();
+  if (['host', '主持人', '主持', 'speaker1', 'anchor'].includes(normalized)) {
+    return 'host';
+  }
+  if (['expert', '專家', '嘉賓', 'speaker2', 'guest'].includes(normalized)) {
+    return 'expert';
+  }
+
+  return null;
+};
+
+const normalizeEmotion = (value: unknown): Dialogue['emotion'] => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (['curious', '好奇'].includes(normalized)) return 'curious';
+  if (['excited', '興奮'].includes(normalized)) return 'excited';
+  if (['thoughtful', '深思'].includes(normalized)) return 'thoughtful';
+  if (['neutral', '中性'].includes(normalized)) return 'neutral';
+  return undefined;
+};
+
+type NormalizedSectionDialogue = {
+  title: string;
+  sectionId: string;
+  dialogues: Dialogue[];
+};
+
+export class GeminiService {
+  private isLocalhostEnvironment(): boolean {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    return window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  }
+
+  private getGenerateEndpoints(): string[] {
+    if (this.isLocalhostEnvironment()) {
+      // Local dev should use Vite middleware route only. Falling back to /api/*
+      // can hit Vite proxy target (:8000) and cause ECONNREFUSED.
+      return [LOCAL_GEMINI_GENERATE_ENDPOINT];
+    }
+
+    return [DEPLOY_GEMINI_GENERATE_ENDPOINT, LOCAL_GEMINI_GENERATE_ENDPOINT];
+  }
+
+  private extractJsonRecord(content: string): JsonRecord | null {
+    const codeBlockMatch = content.match(/```(?:json)?\s*({[\s\S]*})\s*```/i);
+    const candidate = codeBlockMatch ? codeBlockMatch[1] : content;
+
     try {
-      // 系統提示詞，定義播客腳本的格式和規則
-      const systemPrompt = `
-        你是一位專業的播客腳本作家。你的任務是創建一個引人入勝的對話式內容，由主持人和專家進行互動。
-        
-        規則：
-        1. 主持人負責引入話題和提出問題
-        2. 専家提供詳細、有見地的回答
-        3. 使用自然、口語化的語言
-        4. 包含話題之間的過渡
-        5. 在適當的地方加入情感標記 [好奇]、[興奮]、[深思]
-        6. 保持對話簡潔但內容豐富
-        7. 維持專業但友善的語調
-        
-        格式要求：
-        - 每行以 [主持人] 或 [專家] 開頭
-        - 每行後面跟著對話內容
-        - 可以在對話後添加情感標記，如：[主持人] 今天我們有一個非常有趣的話題要討論。[興奮]
-        - 可以指定停頓時間，如：[主持人] 讓我們先來聽聽專家的看法。[停頓:2000]
-        
-        範例格式：
-        [主持人] 歡迎收聽今天的播客節目。我是您的主持人。[興奮]
-        [專家] 很高興能來到這裡與大家分享知識。[友善]
-        [主持人] 今天我們要討論的是人工智慧的未來發展。[好奇]
-      `.trim();
+      const parsed = JSON.parse(candidate);
+      return parsed && typeof parsed === 'object' ? (parsed as JsonRecord) : null;
+    } catch {
+      const firstBraceIndex = candidate.indexOf('{');
+      const lastBraceIndex = candidate.lastIndexOf('}');
+      if (firstBraceIndex === -1 || lastBraceIndex <= firstBraceIndex) {
+        return null;
+      }
 
-      // 使用者提示詞，包含具體的大綱和研究內容
-      const userPrompt = `
-        請根據以下大綱和研究內容創建一個完整的播客對話腳本：
-        
-        播客標題：${outline.title}
-        播客描述：${outline.description}
-        
-        研究內容：
-        摘要：${research.summary}
-        關鍵要點：${research.keyPoints.join(', ')}
-        
-        大綱段落：
-        ${outline.sections.map((section, index) => `
-        ${index + 1}. ${section.title}
-           關鍵要點：${section.keyPoints.join(', ')}
-           預估時長：${section.duration} 秒
-        `).join('\n')}
-        
-        請創建一個完整的對話腳本，涵蓋所有大綱段落。
-      `.trim();
+      try {
+        const parsed = JSON.parse(candidate.slice(firstBraceIndex, lastBraceIndex + 1));
+        return parsed && typeof parsed === 'object' ? (parsed as JsonRecord) : null;
+      } catch {
+        return null;
+      }
+    }
+  }
 
-      const response = await fetch(
-        `${GEMINI_API_URL}/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-        {
+  private extractJsonArray(content: string): unknown[] | null {
+    const codeBlockMatch = content.match(/```(?:json)?\s*(\[[\s\S]*\])\s*```/i);
+    const candidate = codeBlockMatch ? codeBlockMatch[1] : content;
+
+    try {
+      const parsed = JSON.parse(candidate);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      const firstBracketIndex = candidate.indexOf('[');
+      const lastBracketIndex = candidate.lastIndexOf(']');
+      if (firstBracketIndex === -1 || lastBracketIndex <= firstBracketIndex) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(candidate.slice(firstBracketIndex, lastBracketIndex + 1));
+        return Array.isArray(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  private normalizeDialogues(rawDialogues: unknown, idSeed: number): Dialogue[] {
+    if (!Array.isArray(rawDialogues)) {
+      return [];
+    }
+
+    let sequence = 0;
+    return rawDialogues
+      .map((rawItem): Dialogue | null => {
+        if (!rawItem || typeof rawItem !== 'object') {
+          return null;
+        }
+
+        const item = rawItem as JsonRecord;
+        const speaker = normalizeSpeaker(item.speaker);
+        const text = safeString(item.text).trim();
+
+        if (!speaker || !text) {
+          return null;
+        }
+
+        sequence += 1;
+        const pauseAfterRaw = safeNumber(item.pauseAfter);
+
+        return {
+          id: `dialogue_${idSeed}_${sequence}`,
+          speaker,
+          text,
+          emotion: normalizeEmotion(item.emotion),
+          pauseAfter: pauseAfterRaw && pauseAfterRaw > 0 ? Math.round(pauseAfterRaw) : undefined
+        };
+      })
+      .filter((dialogue): dialogue is Dialogue => dialogue !== null);
+  }
+
+  private parseDialogues(content: string): Dialogue[] {
+    const dialogues: Dialogue[] = [];
+    const lines = content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const speakerRegex = /^(?:[\-\*\d\.\)\s]*)?(?:\[(主持人|專家|Host|Expert)\]|(主持人|專家|Host|Expert)\s*[:：])\s*(.*)$/i;
+
+    let currentSpeaker: 'host' | 'expert' | null = null;
+    let currentText = '';
+    let currentEmotion: Dialogue['emotion'];
+    let currentPauseAfter: number | undefined;
+
+    const pushCurrentDialogue = () => {
+      const text = currentText.trim();
+      if (!currentSpeaker || !text) {
+        return;
+      }
+
+      dialogues.push({
+        id: `dialogue_${Date.now()}_${dialogues.length + 1}`,
+        speaker: currentSpeaker,
+        text,
+        emotion: currentEmotion,
+        pauseAfter: currentPauseAfter
+      });
+    };
+
+    for (const line of lines) {
+      const speakerMatch = line.match(speakerRegex);
+
+      if (speakerMatch) {
+        pushCurrentDialogue();
+
+        const speakerToken = (speakerMatch[1] || speakerMatch[2] || '').toLowerCase();
+        currentSpeaker = ['主持人', 'host'].includes(speakerToken) ? 'host' : 'expert';
+        let body = (speakerMatch[3] || '').trim();
+
+        const emotionMatch = body.match(/\[(好奇|興奮|深思|中性|curious|excited|thoughtful|neutral)\]$/i);
+        if (emotionMatch) {
+          currentEmotion = normalizeEmotion(emotionMatch[1]);
+          body = body.replace(/\[(好奇|興奮|深思|中性|curious|excited|thoughtful|neutral)\]$/i, '').trim();
+        } else {
+          currentEmotion = undefined;
+        }
+
+        const pauseMatch = body.match(/\[(?:停頓|pause)\s*[:：]\s*(\d+)\]$/i);
+        if (pauseMatch) {
+          currentPauseAfter = Math.round(Number(pauseMatch[1]));
+          body = body.replace(/\[(?:停頓|pause)\s*[:：]\s*\d+\]$/i, '').trim();
+        } else {
+          currentPauseAfter = undefined;
+        }
+
+        currentText = body;
+      } else if (currentSpeaker) {
+        currentText = `${currentText}\n${line}`.trim();
+      }
+    }
+
+    pushCurrentDialogue();
+    return dialogues;
+  }
+
+  private estimateTotalDuration(dialogues: Dialogue[], fallbackSeconds: number): number {
+    const wordCount = dialogues.reduce((sum, dialogue) => sum + countWords(dialogue.text), 0);
+    const estimatedByWords = Math.round((wordCount / 150) * 60);
+    const pauseSeconds = Math.round(
+      dialogues.reduce((sum, dialogue) => sum + (dialogue.pauseAfter || 0), 0) / 1000
+    );
+    return Math.max(fallbackSeconds, estimatedByWords + pauseSeconds, 60);
+  }
+
+  private partitionDialoguesBySectionCounts(dialogues: Dialogue[], sectionCounts: number[]): ScriptSection[] {
+    const safeCounts = sectionCounts.map((count) => Math.max(1, count));
+    const totalCount = safeCounts.reduce((sum, count) => sum + count, 0);
+    const result: ScriptSection[] = [];
+    let cursor = 0;
+
+    for (let i = 0; i < safeCounts.length; i++) {
+      const count = safeCounts[i];
+      const ratio = count / totalCount;
+      const remainingDialogues = dialogues.length - cursor;
+      const bucketSize = i === safeCounts.length - 1 ? remainingDialogues : Math.max(1, Math.round(dialogues.length * ratio));
+      const sectionDialogues = dialogues.slice(cursor, cursor + bucketSize);
+      cursor += bucketSize;
+
+      result.push({
+        id: `section-${i + 1}`,
+        title: `Section ${i + 1}`,
+        dialogueIds: sectionDialogues.map((dialogue) => dialogue.id)
+      });
+    }
+
+    return result;
+  }
+
+  private async requestGeminiContent(
+    apiKey: string,
+    prompt: string,
+    maxOutputTokens: number,
+    temperature = 0.7
+  ): Promise<string> {
+    const normalizedApiKey = apiKey.trim();
+    if (!normalizedApiKey || normalizedApiKey.length <= 10 || normalizedApiKey.length > MAX_API_KEY_LENGTH) {
+      throw new Error('Gemini API 金鑰格式無效。');
+    }
+
+    const payload = {
+      model: GEMINI_MODEL,
+      requestBody: {
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens
+        }
+      }
+    };
+
+    const endpoints = this.getGenerateEndpoints();
+    let unavailableCount = 0;
+
+    for (const endpoint of endpoints) {
+      try {
+        const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: systemPrompt + '\n\n' + userPrompt
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.7,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 8192
-            }
+            apiKey: normalizedApiKey,
+            payload
           })
-        }
-      );
+        });
 
-      if (!response.ok) {
-        throw new Error(`Gemini API 錯誤: ${response.status} ${response.statusText}`);
+        if (response.status === 404 || response.status === 405) {
+          unavailableCount += 1;
+          continue;
+        }
+
+        const responseBody = await response.text();
+        if (!response.ok) {
+          if (response.status === 429) {
+            const retryDelayMatch = responseBody.match(/retry(?:\s+in)?\s+([\d.]+)s/i);
+            const retryHint = retryDelayMatch ? `（建議 ${retryDelayMatch[1]} 秒後重試）` : '';
+            throw new Error(`Gemini 配額已達上限 ${retryHint}`);
+          }
+          throw new Error(`Gemini API 錯誤: ${response.status} ${response.statusText} - ${responseBody}`);
+        }
+
+        const parsed = JSON.parse(responseBody) as JsonRecord;
+        const candidates = Array.isArray(parsed.candidates) ? (parsed.candidates as JsonRecord[]) : [];
+        const firstCandidate = candidates[0];
+        const candidateContent =
+          firstCandidate && typeof firstCandidate === 'object'
+            ? (firstCandidate.content as JsonRecord | undefined)
+            : undefined;
+        const parts =
+          candidateContent && Array.isArray(candidateContent.parts)
+            ? (candidateContent.parts as JsonRecord[])
+            : [];
+        const content = safeString(parts[0]?.text);
+
+        if (!content) {
+          throw new Error('Gemini response did not contain content.');
+        }
+
+        return content;
+      } catch (error) {
+        unavailableCount += 1;
+        if (unavailableCount >= endpoints.length) {
+          if (error instanceof Error) {
+            throw error;
+          }
+          throw new Error('Gemini proxy request failed.');
+        }
+      }
+    }
+
+    throw new Error(
+      'Gemini proxy is unavailable. In local dev, restart `frontend` dev server and retry.'
+    );
+  }
+
+  /**
+   * 生成對話腳本
+   */
+  async generatePodcastScript(apiKey: string, outline: Outline, research: ResearchResult): Promise<Script> {
+    try {
+      const totalOutlineDuration = outline.sections.reduce(
+        (sum, section) => sum + (Number.isFinite(section.duration) && section.duration > 0 ? section.duration : 180),
+        0
+      );
+      const targetDurationSeconds = totalOutlineDuration > 0 ? totalOutlineDuration : 1200;
+      const targetWordCount = Math.max(1400, Math.round((targetDurationSeconds / 60) * 150));
+      const idSeed = Date.now();
+
+      const prompt = `
+你是一位資深播客編劇，請產生「完整逐字稿」而非摘要。
+
+請根據以下資訊生成 JSON，且只輸出 JSON（不要 Markdown）：
+{
+  "title": "string",
+  "sections": [
+    {
+      "id": "與輸入大綱一致",
+      "title": "string",
+      "dialogues": [
+        {
+          "speaker": "host 或 expert",
+          "text": "完整可朗讀句子，至少 2-5 句，不可只有摘要",
+          "emotion": "neutral|curious|excited|thoughtful (可選)",
+          "pauseAfter": 0-2500 (可選，毫秒)
+        }
+      ]
+    }
+  ]
+}
+
+內容要求：
+1. 整體長度目標約 ${targetWordCount} 字詞。
+2. 每個段落都要有主持人與專家互動，不能只有單一角色。
+3. 每個段落至少 6 句對話。
+4. 要包含清楚的開場、段落過渡、總結、行動建議。
+5. 優先使用研究資料中的具體事實和來源線索。
+
+播客標題：${outline.title}
+播客描述：${outline.description}
+研究摘要：${research.summary}
+研究關鍵要點：${research.keyPoints.join('；')}
+研究來源：
+${research.sources.slice(0, 15).map((source, index) => `${index + 1}. ${source.title} (${source.url}) - ${source.snippet}`).join('\n')}
+
+大綱段落：
+${outline.sections.map((section, index) => `${index + 1}. id=${section.id}, title=${section.title}, keyPoints=${section.keyPoints.join('、')}, duration=${section.duration}s`).join('\n')}
+      `.trim();
+
+      const content = await this.requestGeminiContent(apiKey, prompt, 8192, 0.7);
+      const parsed = this.extractJsonRecord(content);
+
+      let normalizedSectionDialogues: NormalizedSectionDialogue[] = [];
+      if (parsed && Array.isArray(parsed.sections)) {
+        let dialogueSequence = 0;
+        normalizedSectionDialogues = parsed.sections
+          .map((section): NormalizedSectionDialogue | null => {
+            if (!section || typeof section !== 'object') {
+              return null;
+            }
+
+            const sectionObject = section as JsonRecord;
+            const sectionId = safeString(sectionObject.id);
+            const sectionTitle = safeString(sectionObject.title);
+            const dialogues = this.normalizeDialogues(sectionObject.dialogues, idSeed + dialogueSequence);
+            dialogueSequence += dialogues.length + 1;
+
+            if (!sectionId || dialogues.length === 0) {
+              return null;
+            }
+
+            return {
+              sectionId,
+              title: sectionTitle || sectionId,
+              dialogues
+            };
+          })
+          .filter((section): section is NormalizedSectionDialogue => section !== null);
       }
 
-      const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      
-      // 解析生成的對話內容
-      const dialogues = this.parseDialogues(content);
-      
-      // 創建腳本段落結構
-      const sections: ScriptSection[] = outline.sections.map((section, index) => ({
-        id: section.id,
-        title: section.title,
-        // 為簡單起見，將對話平均分配給各段落
-        dialogueIds: dialogues
-          .slice(Math.floor(index * dialogues.length / outline.sections.length), 
-                 Math.floor((index + 1) * dialogues.length / outline.sections.length))
-          .map(d => d.id)
-      }));
-      
-      // 計算總時長（簡化計算，假設平均每句話需要 5 秒）
-      const totalDuration = dialogues.length * 5;
+      let dialogues: Dialogue[] = [];
+      let sections: ScriptSection[] = [];
+
+      if (normalizedSectionDialogues.length > 0) {
+        for (const section of normalizedSectionDialogues) {
+          dialogues = dialogues.concat(section.dialogues);
+        }
+
+        sections = outline.sections.map((outlineSection) => {
+          const matchedSection =
+            normalizedSectionDialogues.find((section) => section.sectionId === outlineSection.id) ||
+            normalizedSectionDialogues.find((section) => section.title === outlineSection.title);
+
+          return {
+            id: outlineSection.id,
+            title: outlineSection.title,
+            dialogueIds: matchedSection ? matchedSection.dialogues.map((dialogue) => dialogue.id) : []
+          };
+        });
+      } else {
+        dialogues = this.parseDialogues(content);
+        if (dialogues.length === 0) {
+          throw new Error('Gemini 回應無法解析為完整逐字稿。');
+        }
+
+        sections = outline.sections.map((section, index) => {
+          const start = Math.floor((index * dialogues.length) / outline.sections.length);
+          const end = Math.floor(((index + 1) * dialogues.length) / outline.sections.length);
+          return {
+            id: section.id,
+            title: section.title,
+            dialogueIds: dialogues.slice(start, end).map((dialogue) => dialogue.id)
+          };
+        });
+      }
+
+      const totalDuration = this.estimateTotalDuration(dialogues, targetDurationSeconds);
 
       return {
         id: `script_${Date.now()}`,
-        title: outline.title,
+        title: safeString(parsed?.title, outline.title),
         dialogues,
         totalDuration,
         sections
@@ -135,18 +489,13 @@ export class GeminiService {
       if (error instanceof Error) {
         throw new Error(`生成播客腳本失敗: ${error.message}`);
       } else {
-        throw new Error(`生成播客腳本失敗: 發生未知錯誤`);
+        throw new Error('生成播客腳本失敗: 發生未知錯誤');
       }
     }
   }
 
   /**
    * 為特定段落生成對話
-   * @param apiKey API 金鑰
-   * @param section 大綱段落
-   * @param research 研究結果
-   * @param previousContext 先前的對話上下文（可選）
-   * @returns 對話列表
    */
   async generateSectionDialogue(
     apiKey: string,
@@ -155,227 +504,184 @@ export class GeminiService {
     previousContext?: string
   ): Promise<Dialogue[]> {
     try {
-      const systemPrompt = `
-        你是一位專業的播客腳本作家。你的任務是為播客的一個特定段落創建對話內容。
-        
-        規則：
-        1. 主持人負責引入話題和提出問題
-        2. 専家提供詳細、有見地的回答
-        3. 使用自然、口語化的語言
-        4. 加入情感標記 [好奇]、[興奮]、[深思] 使對話更生動
-        5. 保持對話簡潔但內容豐富
-        
-        格式要求：
-        - 每行以 [主持人] 或 [專家] 開頭
-        - 每行後面跟著對話內容
-        - 可以在對話後添加情感標記，如：[主持人] 今天我們有一個非常有趣的話題要討論。[興奮]
+      const targetWordCount = Math.max(280, Math.round((section.duration / 60) * 150));
+      const idSeed = Date.now();
+
+      const prompt = `
+請為以下播客段落生成完整逐字稿，輸出 JSON 陣列，且只輸出 JSON：
+[
+  {
+    "speaker": "host 或 expert",
+    "text": "完整可朗讀句子",
+    "emotion": "neutral|curious|excited|thoughtful (可選)",
+    "pauseAfter": 0-2500 (可選)
+  }
+]
+
+要求：
+1. 目標字詞約 ${targetWordCount}。
+2. 主持人與專家都要發言，至少各 3 句。
+3. 要有自然銜接，不可條列摘要化。
+
+段落標題：${section.title}
+段落關鍵要點：${section.keyPoints.join('、')}
+預估時長：${section.duration} 秒
+研究摘要：${research.summary}
+研究關鍵要點：${research.keyPoints.join('；')}
+${previousContext ? `前文上下文：${previousContext}` : ''}
       `.trim();
 
-      const userPrompt = `
-        請為以下播客段落創建對話內容：
-        
-        段落標題：${section.title}
-        段落關鍵要點：${section.keyPoints.join(', ')}
-        預估時長：${section.duration} 秒
-        
-        相關研究內容：
-        摘要：${research.summary}
-        關鍵要點：${research.keyPoints.join(', ')}
-        
-        ${previousContext ? `先前對話上下文：${previousContext}` : ''}
-        
-        請創建一段適合這個段落的對話，通常包含 3-5 輪交談。
-      `.trim();
+      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.7);
+      const parsedArray = this.extractJsonArray(content);
+      const normalized = this.normalizeDialogues(parsedArray, idSeed);
 
-      const response = await fetch(
-        `${GEMINI_API_URL}/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: systemPrompt + '\n\n' + userPrompt
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.7,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 4096
-            }
-          })
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Gemini API 錯誤: ${response.status} ${response.statusText}`);
+      if (normalized.length > 0) {
+        return normalized;
       }
 
-      const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      
-      return this.parseDialogues(content);
+      const fallback = this.parseDialogues(content);
+      if (fallback.length === 0) {
+        throw new Error('段落對話解析失敗。');
+      }
+
+      return fallback;
     } catch (error: unknown) {
       console.error('生成段落對話時發生錯誤:', error);
       if (error instanceof Error) {
         throw new Error(`生成段落對話失敗: ${error.message}`);
       } else {
-        throw new Error(`生成段落對話失敗: 發生未知錯誤`);
+        throw new Error('生成段落對話失敗: 發生未知錯誤');
       }
     }
   }
 
   /**
    * 根據反饋優化腳本
-   * @param apiKey API 金鑰
-   * @param script 原始腳本
-   * @param feedback 用戶反饋
-   * @returns 優化後的腳本
    */
-  async refineScript(
-    apiKey: string,
-    script: Script,
-    feedback: string
-  ): Promise<Script> {
+  async refineScript(apiKey: string, script: Script, feedback: string): Promise<Script> {
     try {
-      const systemPrompt = `
-        你是一位專業的播客腳本編輯。你的任務是根據用戶反饋對現有的播客對話腳本進行修改和完善。
-        
-        規則：
-        1. 保持原有的對話結構和格式
-        2. 根據反饋進行相應的調整
-        3. 確保修改後的對話仍然自然流暢
-        4. 可以調整對話內容、情感標記或停頓時間
-        5. 保持主持人和專家的角色特點
-        
-        格式要求：
-        - 每行以 [主持人] 或 [專家] 開頭
-        - 每行後面跟著對話內容
-        - 可以包含情感標記和停頓時間
-      `.trim();
+      const sectionContext = script.sections.map((section) => {
+        const sectionDialogues = script.dialogues.filter((dialogue) => section.dialogueIds.includes(dialogue.id));
+        return {
+          id: section.id,
+          title: section.title,
+          dialogues: sectionDialogues.map((dialogue) => ({
+            speaker: dialogue.speaker,
+            text: dialogue.text,
+            emotion: dialogue.emotion,
+            pauseAfter: dialogue.pauseAfter
+          }))
+        };
+      });
 
-      const userPrompt = `
-        請根據以下反饋對播客腳本進行修改：
-        
-        播客標題：${script.title}
-        
-        用戶反饋：${feedback}
-        
-        原始腳本：
-        ${script.dialogues.map(d => `[${d.speaker === 'host' ? '主持人' : '專家'}] ${d.text}${d.emotion ? `[${d.emotion}]` : ''}${d.pauseAfter ? `[停頓:${d.pauseAfter}]` : ''}`).join('\n')}
-        
-        請提供修改後的完整腳本。
-      `.trim();
-
-      const response = await fetch(
-        `${GEMINI_API_URL}/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+      const prompt = `
+請根據回饋修改以下播客逐字稿，輸出 JSON 物件且只輸出 JSON：
+{
+  "title": "string",
+  "sections": [
+    {
+      "id": "沿用原段落 id",
+      "title": "string",
+      "dialogues": [
         {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: systemPrompt + '\n\n' + userPrompt
-                  }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.7,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 8192
-            }
-          })
+          "speaker": "host 或 expert",
+          "text": "完整可朗讀句子",
+          "emotion": "neutral|curious|excited|thoughtful (可選)",
+          "pauseAfter": 0-2500 (可選)
         }
-      );
+      ]
+    }
+  ]
+}
 
-      if (!response.ok) {
-        throw new Error(`Gemini API 錯誤: ${response.status} ${response.statusText}`);
+回饋：${feedback}
+原始標題：${script.title}
+原始段落與逐字稿：
+${JSON.stringify(sectionContext)}
+      `.trim();
+
+      const content = await this.requestGeminiContent(apiKey, prompt, 8192, 0.65);
+      const parsed = this.extractJsonRecord(content);
+      const idSeed = Date.now();
+
+      let dialogues: Dialogue[] = [];
+      let sections: ScriptSection[] = [];
+
+      if (parsed && Array.isArray(parsed.sections)) {
+        let sequenceOffset = 0;
+        const parsedSections = parsed.sections
+          .map((section): NormalizedSectionDialogue | null => {
+            if (!section || typeof section !== 'object') {
+              return null;
+            }
+            const sectionObject = section as JsonRecord;
+            const sectionId = safeString(sectionObject.id);
+            const sectionTitle = safeString(sectionObject.title);
+            const sectionDialogues = this.normalizeDialogues(sectionObject.dialogues, idSeed + sequenceOffset);
+            sequenceOffset += sectionDialogues.length + 1;
+
+            if (!sectionId || sectionDialogues.length === 0) {
+              return null;
+            }
+
+            return {
+              sectionId,
+              title: sectionTitle || sectionId,
+              dialogues: sectionDialogues
+            };
+          })
+          .filter((section): section is NormalizedSectionDialogue => section !== null);
+
+        if (parsedSections.length > 0) {
+          for (const section of parsedSections) {
+            dialogues = dialogues.concat(section.dialogues);
+          }
+
+          sections = script.sections.map((section) => {
+            const matchedSection =
+              parsedSections.find((parsedSection) => parsedSection.sectionId === section.id) ||
+              parsedSections.find((parsedSection) => parsedSection.title === section.title);
+
+            return {
+              id: section.id,
+              title: section.title,
+              dialogueIds: matchedSection ? matchedSection.dialogues.map((dialogue) => dialogue.id) : []
+            };
+          });
+        }
       }
 
-      const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      
-      // 解析生成的對話內容
-      const dialogues = this.parseDialogues(content);
-      
-      // 保持原有的段落結構，但更新對話內容
-      const sections = script.sections.map(section => ({
-        ...section,
-        dialogueIds: section.dialogueIds.filter(id => dialogues.some(d => d.id === id))
-      }));
+      if (dialogues.length === 0) {
+        dialogues = this.parseDialogues(content);
+      }
+
+      if (dialogues.length === 0) {
+        throw new Error('優化後腳本解析失敗。');
+      }
+
+      if (sections.length === 0) {
+        const sectionCounts = script.sections.map((section) => Math.max(section.dialogueIds.length, 1));
+        sections = this.partitionDialoguesBySectionCounts(dialogues, sectionCounts).map((section, index) => ({
+          ...section,
+          id: script.sections[index]?.id || section.id,
+          title: script.sections[index]?.title || section.title
+        }));
+      }
 
       return {
         ...script,
+        title: safeString(parsed?.title, script.title),
         dialogues,
-        sections
+        sections,
+        totalDuration: this.estimateTotalDuration(dialogues, script.totalDuration)
       };
     } catch (error: unknown) {
       console.error('優化播客腳本時發生錯誤:', error);
       if (error instanceof Error) {
         throw new Error(`優化播客腳本失敗: ${error.message}`);
       } else {
-        throw new Error(`優化播客腳本失敗: 發生未知錯誤`);
+        throw new Error('優化播客腳本失敗: 發生未知錯誤');
       }
     }
-  }
-
-  /**
-   * 解析對話內容
-   * @param content 原始內容字串
-   * @returns 對話物件陣列
-   */
-  private parseDialogues(content: string): Dialogue[] {
-    const dialogues: Dialogue[] = [];
-    const lines = content.split('\n').filter(line => line.trim() !== '');
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      
-      // 匹配 [主持人] 或 [專家] 開頭的行
-      const speakerMatch = line.match(/^\[(主持人|專家)\]\s*(.*)/);
-      if (speakerMatch) {
-        let text = speakerMatch[2];
-        const emotionMatch = text.match(/\[(好奇|興奮|深思|中性)\]$/);
-        let emotion: 'neutral' | 'curious' | 'excited' | 'thoughtful' | undefined;
-        
-        if (emotionMatch) {
-          text = text.replace(/\[(好奇|興奮|深思|中性)\]$/, '').trim();
-          emotion = emotionMatch[1] === '好奇' ? 'curious' : 
-                   emotionMatch[1] === '興奮' ? 'excited' : 
-                   emotionMatch[1] === '深思' ? 'thoughtful' : 'neutral';
-        }
-        
-        const pauseMatch = text.match(/\[停頓:(\d+)\]$/);
-        let pauseAfter: number | undefined;
-        
-        if (pauseMatch) {
-          text = text.replace(/\[停頓:(\d+)\]$/, '').trim();
-          pauseAfter = parseInt(pauseMatch[1], 10);
-        }
-        
-        dialogues.push({
-          id: `dialogue_${Date.now()}_${i}`,
-          speaker: speakerMatch[1] === '主持人' ? 'host' : 'expert',
-          text,
-          emotion,
-          pauseAfter
-        });
-      }
-    }
-    
-    return dialogues;
   }
 }

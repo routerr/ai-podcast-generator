@@ -2,6 +2,174 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Catppuccin Mocha base/surface palette */
+:root {
+  --ctp-crust: #11111b;
+  --ctp-mantle: #181825;
+  --ctp-base: #1e1e2e;
+  --ctp-surface0: #313244;
+  --ctp-surface1: #45475a;
+  --ctp-surface2: #585b70;
+  --ctp-text: #cdd6f4;
+  --ctp-subtext0: #a6adc8;
+  --ctp-overlay0: #6c7086;
+  --ctp-lavender: #b4befe;
+  --ctp-lavender-soft: #cdd6f4;
+  --ctp-mauve: #cba6f7;
+  --ctp-sapphire: #74c7ec;
+  --ctp-blue: #89b4fa;
+  --ctp-green: #a6e3a1;
+  --ctp-red: #f38ba8;
+  --ctp-yellow: #f9e2af;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  background: var(--ctp-base);
+}
+
 body {
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--ctp-text);
+  background: var(--ctp-base);
+}
+
+@layer base {
+  * {
+    border-color: var(--ctp-surface2);
+  }
+
+  ::selection {
+    background: rgba(180, 190, 254, 0.32);
+    color: var(--ctp-text);
+  }
+
+  input,
+  select,
+  textarea {
+    color: var(--ctp-text);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--ctp-overlay0);
+  }
+
+  select option {
+    background: var(--ctp-base);
+    color: var(--ctp-text);
+  }
+}
+
+@layer components {
+  .espresso-shell {
+    background: var(--ctp-base);
+    color: var(--ctp-text);
+  }
+
+  .espresso-basic-bg {
+    background: var(--ctp-mantle);
+  }
+
+  .espresso-overlay {
+    background: rgba(17, 17, 27, 0.72);
+  }
+
+  .espresso-card {
+    background: var(--ctp-surface0);
+    border: 1px solid var(--ctp-surface1);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+
+  .espresso-card-soft {
+    background: var(--ctp-surface1);
+    border: 1px solid var(--ctp-surface2);
+    backdrop-filter: blur(6px);
+  }
+
+  .espresso-input {
+    background: var(--ctp-mantle);
+    border: 1px solid var(--ctp-surface2);
+    color: var(--ctp-text);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .espresso-input:focus {
+    outline: none;
+    border-color: rgba(180, 190, 254, 0.85);
+    box-shadow: 0 0 0 3px rgba(180, 190, 254, 0.25);
+  }
+
+  .espresso-select {
+    background: var(--ctp-mantle);
+    border: 1px solid var(--ctp-surface2);
+    color: var(--ctp-text);
+  }
+
+  .espresso-btn-primary {
+    background: var(--ctp-surface1);
+    color: var(--ctp-text);
+    border: 1px solid rgba(180, 190, 254, 0.7);
+    font-weight: 600;
+    transition: background-color 0.16s ease, filter 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 0 0 1px rgba(180, 190, 254, 0.08) inset;
+  }
+
+  .espresso-btn-primary:hover:not(:disabled) {
+    background: var(--ctp-surface2);
+    filter: brightness(1.02);
+    box-shadow: 0 0 0 1px rgba(180, 190, 254, 0.16) inset;
+  }
+
+  .espresso-btn-secondary {
+    background: var(--ctp-surface0);
+    color: var(--ctp-text);
+    border: 1px solid var(--ctp-surface2);
+    transition: filter 0.2s ease;
+  }
+
+  .espresso-btn-secondary:hover:not(:disabled) {
+    background: var(--ctp-surface1);
+    filter: brightness(1.08);
+  }
+
+  .espresso-btn-danger {
+    background: var(--ctp-surface0);
+    color: #f2cdcd;
+    border: 1px solid rgba(243, 139, 168, 0.45);
+  }
+
+  .espresso-btn-danger:hover:not(:disabled) {
+    background: var(--ctp-surface1);
+    filter: brightness(1.08);
+  }
+
+  .espresso-muted {
+    color: var(--ctp-subtext0);
+  }
+
+  .espresso-divider {
+    border-color: var(--ctp-surface2);
+  }
+
+  .espresso-error {
+    background: var(--ctp-surface0);
+    border: 1px solid rgba(243, 139, 168, 0.45);
+    color: #f2cdcd;
+  }
+
+  .espresso-warning {
+    background: var(--ctp-surface0);
+    border: 1px solid rgba(249, 226, 175, 0.5);
+    color: #f9e2af;
+  }
+
+  .espresso-success {
+    background: var(--ctp-surface0);
+    border: 1px solid rgba(166, 227, 161, 0.45);
+    color: #a6e3a1;
+  }
 }
