@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { Dialogue, Script } from '../types';
@@ -23,6 +23,17 @@ const ScriptPanel: React.FC = () => {
   const [feedback, setFeedback] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasAttemptedInitialGeneration, setHasAttemptedInitialGeneration] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleCancel = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsGenerating(false);
+    setError(null);
+  }, []);
   const missingProviders = getMissingProviderKeys(apiKeys, config);
   const hasMissingProviderKeys = missingProviders.length > 0;
 
@@ -43,12 +54,17 @@ const ScriptPanel: React.FC = () => {
 
     setIsGenerating(true);
     setError(null);
+    setHasAttemptedInitialGeneration(true);
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       const workflowService = new LlmWorkflowService({ apiKeys, config });
       const { result: script, provider, usedFallback } = await workflowService.generatePodcastScript(
         podcastState.outline,
-        podcastState.research
+        podcastState.research,
+        { signal: abortController.signal }
       );
 
       dispatch({ type: 'SET_SCRIPT', payload: script });
@@ -71,6 +87,10 @@ const ScriptPanel: React.FC = () => {
         );
       }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Script generation canceled by user');
+        return;
+      }
       console.error('Error generating script:', err);
       setError(err instanceof Error ? err.message : t('script.error.generateUnknown'));
     } finally {
@@ -105,6 +125,9 @@ const ScriptPanel: React.FC = () => {
     setIsGenerating(true);
     setError(null);
 
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
       const section = podcastState.outline?.sections.find((s) => s.id === sectionId);
 
@@ -128,7 +151,7 @@ const ScriptPanel: React.FC = () => {
           research: podcastState.research,
           previousContext,
           currentScript: podcastState.script
-        });
+        }, { signal: abortController.signal });
 
       const updatedDialogues = [...podcastState.script.dialogues];
       const sectionStartIndex = updatedDialogues.findIndex((d) =>
@@ -170,6 +193,10 @@ const ScriptPanel: React.FC = () => {
         }
       });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Section regeneration canceled by user');
+        return;
+      }
       console.error('Error regenerating section:', err);
       setError(err instanceof Error ? err.message : t('script.error.regenerateUnknown'));
     } finally {
@@ -205,6 +232,9 @@ const ScriptPanel: React.FC = () => {
     setIsGenerating(true);
     setError(null);
 
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
       const workflowService = new LlmWorkflowService({ apiKeys, config });
       const { result: refinedScript }: { result: Script } = await workflowService.refineScript({
@@ -212,7 +242,7 @@ const ScriptPanel: React.FC = () => {
         research: podcastState.research,
         script: podcastState.script,
         feedback
-      });
+      }, { signal: abortController.signal });
 
       dispatch({ type: 'UPDATE_SCRIPT', payload: refinedScript });
       dispatch({
@@ -227,6 +257,10 @@ const ScriptPanel: React.FC = () => {
       });
       setFeedback('');
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Script refinement canceled by user');
+        return;
+      }
       console.error('Error refining script:', err);
       setError(err instanceof Error ? err.message : t('script.error.refineUnknown'));
     } finally {
@@ -291,11 +325,12 @@ const ScriptPanel: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!podcastState.script && podcastState.outline && podcastState.research && !hasMissingProviderKeys) {
+    if (!hasAttemptedInitialGeneration && !podcastState.script && podcastState.outline && podcastState.research && !hasMissingProviderKeys) {
       generateScript();
     }
   }, [
     generateScript,
+    hasAttemptedInitialGeneration,
     hasMissingProviderKeys,
     podcastState.outline,
     podcastState.research,
@@ -512,17 +547,32 @@ const ScriptPanel: React.FC = () => {
       )}
 
       {(isLoading || isGenerating) && (
-        <div className="fixed inset-0 espresso-overlay backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="espresso-card rounded-2xl p-8 max-w-md w-full mx-4">
+        <div 
+          className="fixed inset-0 espresso-overlay backdrop-blur-sm flex items-center justify-center z-50"
+          onClick={handleCancel}
+        >
+          <div 
+            className="espresso-card rounded-2xl p-8 max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex flex-col items-center">
               <svg className="animate-spin h-12 w-12 text-[#b4befe] mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
               <h3 className="text-xl font-semibold text-white mb-2">{t('script.modal.processingTitle')}</h3>
-              <p className="espresso-muted text-center">
+              <p className="espresso-muted text-center mb-6">
                 {t('script.modal.processingDescription')}
               </p>
+              
+              {isGenerating && (
+                <button
+                  onClick={handleCancel}
+                  className="px-6 py-2 rounded-lg font-medium transition-all espresso-btn-danger"
+                >
+                  {t('script.cancel')}
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Radio, Settings } from 'lucide-react';
+import { Radio, Settings, RotateCcw } from 'lucide-react';
 import { ApiKeyPanel } from './ApiKeyPanel';
+import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { LANGUAGE_OPTIONS } from '../i18n/translations';
 import { UILanguage } from '../types';
@@ -12,6 +13,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ onHomeClick, onApiKeyClick }) => {
   const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const { currentStep } = useAppContext();
   const { language, setLanguage, t } = useI18n();
 
   const togglePanel = () => {
@@ -44,7 +46,18 @@ export const Header: React.FC<HeaderProps> = ({ onHomeClick, onApiKeyClick }) =>
           </div>
 
           <div className="flex items-center gap-2">
-            <label className="text-sm espresso-muted" htmlFor="language-selector">
+            {currentStep !== 'input' && (
+              <button
+                onClick={onHomeClick}
+                className="flex items-center gap-1.5 px-3 py-2 mr-2 rounded-lg transition-colors espresso-btn-danger"
+                aria-label={t('header.reset')}
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span className="text-sm font-medium hidden sm:inline">{t('header.reset')}</span>
+              </button>
+            )}
+
+            <label className="text-sm espresso-muted hidden sm:block" htmlFor="language-selector">
               {t('header.language')}
             </label>
             <select

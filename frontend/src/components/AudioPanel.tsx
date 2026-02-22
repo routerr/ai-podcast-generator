@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { TTSService } from '../services/ttsService';
@@ -20,6 +20,15 @@ const AudioPanel: React.FC = () => {
   const [availableVoices, setAvailableVoices] = useState<VoiceOption[]>([]);
   const [isBrowserPreviewPlaying, setIsBrowserPreviewPlaying] = useState<boolean>(false);
   const [browserPreviewProgress, setBrowserPreviewProgress] = useState<number>(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleCancelGeneration = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    dispatch({ type: 'SET_AUDIO_STATE', payload: { isGenerating: false, error: null } });
+  }, [dispatch]);
 
   useEffect(() => {
     const initializeVoices = () => {
@@ -76,6 +85,9 @@ const AudioPanel: React.FC = () => {
 
     dispatch({ type: 'SET_AUDIO_STATE', payload: { isGenerating: true, progress: 0, error: null } });
 
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
       const ttsService = new TTSService();
       const audioService = new AudioService();
@@ -88,19 +100,22 @@ const AudioPanel: React.FC = () => {
           dispatch({ type: 'SET_AUDIO_STATE', payload: { progress } });
         },
         apiKeys.openaiKey,
-        rate
+        rate,
+        abortController.signal
       );
 
       const sequenceBlobs: Blob[] = [];
       for (let i = 0; i < podcastState.script.dialogues.length; i++) {
-        sequenceBlobs.push(audioBlobs[i]);
-        const pauseAfter = podcastState.script.dialogues[i].pauseAfter;
-        if (pauseAfter && pauseAfter > 0) {
-          sequenceBlobs.push(await audioService.addPause(pauseAfter));
+        if (abortController.signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
         }
+        sequenceBlobs.push(audioBlobs[i]);
+        // Note: We intentionally skip adding WAV PCM pauses here to allow
+        // clean byte-by-byte concatenation of the native OpenAI MP3 blobs.
       }
 
-      const mergedAudioBlob = await audioService.mergeAudioBlobs(sequenceBlobs);
+      // Concatenate the MP3 chunks directly into a single valid MP3 file
+      const mergedAudioBlob = new Blob(sequenceBlobs, { type: 'audio/mpeg' });
       const duration = await audioService.getAudioDuration(mergedAudioBlob);
       const audioUrl = URL.createObjectURL(mergedAudioBlob);
 
@@ -120,6 +135,10 @@ const AudioPanel: React.FC = () => {
         }
       });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Audio generation canceled by user');
+        return;
+      }
       console.error('Error generating audio:', err);
       dispatch({
         type: 'SET_AUDIO_STATE',
@@ -171,11 +190,14 @@ const AudioPanel: React.FC = () => {
   }, [audioState.isGenerating, dispatch, expertVoice, hostVoice, podcastState.script, rate, t]);
 
   const downloadPodcast = () => {
-    if (!audioState.audioBlob || !podcastState.topic) return;
+    if (!audioState.audioBlob || !podcastState.script) return;
 
     const audioService = new AudioService();
-    const date = new Date().toISOString().split('T')[0];
-    const filename = `podcast_${podcastState.topic.replace(/\s+/g, '_')}_${date}.mp3`;
+    // Fallback to topic if title is somehow missing
+    const rawTitle = podcastState.script.title || podcastState.topic || 'podcast';
+    // Remove invalid filename characters, replace spaces with underscores, but preserve multilingual text
+    const safeTitle = rawTitle.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_');
+    const filename = `${safeTitle}.mp3`;
 
     audioService.createDownloadLink(audioState.audioBlob, filename);
   };
@@ -304,17 +326,7 @@ const AudioPanel: React.FC = () => {
                     : 'espresso-btn-primary'
                 }`}
               >
-                {audioState.isGenerating ? (
-                  <span className="flex items-center justify-center">
-                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    {t('audio.generating', { progress: audioState.progress })}
-                  </span>
-                ) : (
-                  t('audio.generate')
-                )}
+                {t('audio.generate')}
               </button>
 
               <button
@@ -394,6 +406,38 @@ const AudioPanel: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {audioState.isGenerating && (
+        <div 
+          className="fixed inset-0 espresso-overlay backdrop-blur-sm flex items-center justify-center z-50"
+          onClick={handleCancelGeneration}
+        >
+          <div 
+            className="espresso-card rounded-2xl p-8 max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center">
+              <svg className="animate-spin h-12 w-12 text-[#fab387] mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <h3 className="text-xl font-semibold text-white mb-2">
+                {t('audio.generating', { progress: audioState.progress })}
+              </h3>
+              <p className="espresso-muted text-center mb-6">
+                {t('script.modal.processingDescription')}
+              </p>
+              
+              <button
+                onClick={handleCancelGeneration}
+                className="px-6 py-2 rounded-lg font-medium transition-all espresso-btn-danger"
+              >
+                {t('script.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

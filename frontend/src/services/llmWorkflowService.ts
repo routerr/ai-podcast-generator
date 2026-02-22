@@ -13,20 +13,21 @@ import { GeminiService } from './geminiService';
 import { OpenAiCompatibleLlmService } from './openAiCompatibleLlmService';
 import { PerplexityService } from './perplexityService';
 
-const DEFAULT_OPENROUTER_MODEL = 'meta-llama/llama-3.3-70b-instruct:free';
+const DEFAULT_OPENROUTER_MODEL = 'google/gemini-2.0-flash-lite-preview-02-05:free';
 const DEFAULT_OLLAMA_MODEL = 'llama3.1:8b';
 const DEFAULT_OLLAMA_BASE_URL = 'https://api.ollama.com';
 
 interface ProviderClient {
-  researchTopic: (topic: string) => Promise<ResearchResult>;
-  generateOutline: (research: ResearchResult) => Promise<Outline>;
-  generatePodcastScript: (outline: Outline, research: ResearchResult) => Promise<Script>;
+  researchTopic: (topic: string, options?: { signal?: AbortSignal }) => Promise<ResearchResult>;
+  generateOutline: (research: ResearchResult, options?: { signal?: AbortSignal }) => Promise<Outline>;
+  generatePodcastScript: (outline: Outline, research: ResearchResult, options?: { signal?: AbortSignal }) => Promise<Script>;
   generateSectionDialogue?: (
     section: OutlineSection,
     research: ResearchResult,
-    previousContext?: string
+    previousContext?: string,
+    options?: { signal?: AbortSignal }
   ) => Promise<Dialogue[]>;
-  refineScript?: (script: Script, feedback: string) => Promise<Script>;
+  refineScript?: (script: Script, feedback: string, options?: { signal?: AbortSignal }) => Promise<Script>;
 }
 
 export interface LlmRunResult<T> {
@@ -167,13 +168,13 @@ export class LlmWorkflowService {
 
       const geminiService = new GeminiService();
       return {
-        researchTopic: (topic) => geminiService.researchTopic(geminiKey, topic),
-        generateOutline: (research) => geminiService.generateOutline(geminiKey, research),
-        generatePodcastScript: (outline, research) =>
-          geminiService.generatePodcastScript(geminiKey, outline, research),
-        generateSectionDialogue: (section, research, previousContext) =>
-          geminiService.generateSectionDialogue(geminiKey, section, research, previousContext),
-        refineScript: (script, feedback) => geminiService.refineScript(geminiKey, script, feedback)
+        researchTopic: (topic, options) => geminiService.researchTopic(geminiKey, topic, options),
+        generateOutline: (research, options) => geminiService.generateOutline(geminiKey, research, options),
+        generatePodcastScript: (outline, research, options) =>
+          geminiService.generatePodcastScript(geminiKey, outline, research, options),
+        generateSectionDialogue: (section, research, previousContext, options) =>
+          geminiService.generateSectionDialogue(geminiKey, section, research, previousContext, options),
+        refineScript: (script, feedback, options) => geminiService.refineScript(geminiKey, script, feedback, options)
       };
     }
 
@@ -185,10 +186,10 @@ export class LlmWorkflowService {
 
       const perplexityService = new PerplexityService(perplexityKey);
       return {
-        researchTopic: (topic) => perplexityService.researchTopic(topic),
-        generateOutline: (research) => perplexityService.generateOutline(research),
-        generatePodcastScript: (outline, research) =>
-          perplexityService.generatePodcastScript(outline, research)
+        researchTopic: (topic, options) => perplexityService.researchTopic(topic, options),
+        generateOutline: (research, options) => perplexityService.generateOutline(research, options),
+        generatePodcastScript: (outline, research, options) =>
+          perplexityService.generatePodcastScript(outline, research, options)
       };
     }
 
@@ -205,10 +206,10 @@ export class LlmWorkflowService {
       });
 
       return {
-        researchTopic: (topic) => openrouterService.researchTopic(topic),
-        generateOutline: (research) => openrouterService.generateOutline(research),
-        generatePodcastScript: (outline, research) =>
-          openrouterService.generatePodcastScript(outline, research)
+        researchTopic: (topic, options) => openrouterService.researchTopic(topic, options),
+        generateOutline: (research, options) => openrouterService.generateOutline(research, options),
+        generatePodcastScript: (outline, research, options) =>
+          openrouterService.generatePodcastScript(outline, research, options)
       };
     }
 
@@ -228,16 +229,17 @@ export class LlmWorkflowService {
     });
 
     return {
-      researchTopic: (topic) => ollamaService.researchTopic(topic),
-      generateOutline: (research) => ollamaService.generateOutline(research),
-      generatePodcastScript: (outline, research) =>
-        ollamaService.generatePodcastScript(outline, research)
+      researchTopic: (topic, options) => ollamaService.researchTopic(topic, options),
+      generateOutline: (research, options) => ollamaService.generateOutline(research, options),
+      generatePodcastScript: (outline, research, options) =>
+        ollamaService.generatePodcastScript(outline, research, options)
     };
   }
 
   private async runWithFallback<T>(
     operationLabel: string,
-    run: (provider: LLMProvider, client: ProviderClient) => Promise<T>
+    run: (provider: LLMProvider, client: ProviderClient) => Promise<T>,
+    options?: { signal?: AbortSignal }
   ): Promise<LlmRunResult<T>> {
     const chain = this.getProviderChain();
     const primary = chain[0];
@@ -268,6 +270,9 @@ export class LlmWorkflowService {
           usedFallback: provider !== primary
         };
       } catch (error) {
+        if (options?.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          throw error;
+        }
         providerErrors.push(`${toDisplayName(provider)}: ${summarizeErrorMessage(error)}`);
       }
     }
@@ -275,38 +280,43 @@ export class LlmWorkflowService {
     throw new Error(`${operationLabel} failed. ${providerErrors.join(' | ')}`);
   }
 
-  async researchTopic(topic: string): Promise<LlmRunResult<ResearchResult>> {
-    return this.runWithFallback('Research topic', (_provider, client) => client.researchTopic(topic));
+  async researchTopic(topic: string, options?: { signal?: AbortSignal }): Promise<LlmRunResult<ResearchResult>> {
+    return this.runWithFallback('Research topic', (_provider, client) => client.researchTopic(topic, options), options);
   }
 
-  async generateOutline(research: ResearchResult): Promise<LlmRunResult<Outline>> {
+  async generateOutline(research: ResearchResult, options?: { signal?: AbortSignal }): Promise<LlmRunResult<Outline>> {
     return this.runWithFallback('Generate outline', (_provider, client) =>
-      client.generateOutline(research)
+      client.generateOutline(research, options),
+      options
     );
   }
 
   async generatePodcastScript(
     outline: Outline,
-    research: ResearchResult
+    research: ResearchResult,
+    options?: { signal?: AbortSignal }
   ): Promise<LlmRunResult<Script>> {
     return this.runWithFallback('Generate podcast script', (_provider, client) =>
-      client.generatePodcastScript(outline, research)
+      client.generatePodcastScript(outline, research, options),
+      options
     );
   }
 
   async generateSectionDialogue(
-    input: GenerateSectionDialogueInput
+    input: GenerateSectionDialogueInput,
+    options?: { signal?: AbortSignal }
   ): Promise<LlmRunResult<Dialogue[]>> {
     return this.runWithFallback('Regenerate section', async (_provider, client) => {
       if (client.generateSectionDialogue) {
         return client.generateSectionDialogue(
           input.section,
           input.research,
-          input.previousContext
+          input.previousContext,
+          options
         );
       }
 
-      const regeneratedScript = await client.generatePodcastScript(input.outline, input.research);
+      const regeneratedScript = await client.generatePodcastScript(input.outline, input.research, options);
       const sectionInRegenerated =
         regeneratedScript.sections.find((section) => section.id === input.section.id) ||
         regeneratedScript.sections.find((section) => section.title === input.section.title);
@@ -341,10 +351,10 @@ export class LlmWorkflowService {
     });
   }
 
-  async refineScript(input: RefineScriptInput): Promise<LlmRunResult<Script>> {
+  async refineScript(input: RefineScriptInput, options?: { signal?: AbortSignal }): Promise<LlmRunResult<Script>> {
     return this.runWithFallback('Refine script', async (_provider, client) => {
       if (client.refineScript) {
-        return client.refineScript(input.script, input.feedback);
+        return client.refineScript(input.script, input.feedback, options);
       }
 
       const refinedResearch: ResearchResult = {
@@ -357,8 +367,8 @@ export class LlmWorkflowService {
         timestamp: new Date()
       };
 
-      return client.generatePodcastScript(input.outline, refinedResearch);
-    });
+      return client.generatePodcastScript(input.outline, refinedResearch, options);
+    }, options);
   }
 }
 

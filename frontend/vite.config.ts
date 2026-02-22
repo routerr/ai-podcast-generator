@@ -94,6 +94,7 @@ const sendJson = (res: any, status: number, payload: Record<string, unknown>) =>
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Proxy-Handled', '1');
   res.end(JSON.stringify(payload));
 };
 
@@ -101,6 +102,7 @@ const sendRaw = (res: any, status: number, contentType: string, body: string | U
   res.statusCode = status;
   res.setHeader('Content-Type', contentType);
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Proxy-Handled', '1');
   res.end(body);
 };
 
@@ -117,7 +119,9 @@ const providerProxyMiddlewarePlugin = () => ({
         '/gemini/validate',
         '/gemini/generate',
         '/openai/validate',
-        '/openai/speech'
+        '/openai/speech',
+        '/openrouter/validate',
+        '/ollama/validate'
       ];
 
       if (!supportedPaths.includes(path)) {
@@ -328,23 +332,67 @@ const providerProxyMiddlewarePlugin = () => ({
           if (!/^https?:\/\//i.test(baseUrl)) {
             return sendJson(res, 400, { error: 'invalid_base_url' });
           }
-          upstreamUrl = `${baseUrl}/v1/chat/completions`;
+          upstreamUrl = `${baseUrl}/api/chat`;
+          
+          const payloadRecord = payload as Record<string, any>;
+          let ollamaPayload: Record<string, any> = {
+            model: payloadRecord.model,
+            messages: payloadRecord.messages,
+            stream: false,
+            options: {}
+          };
+          if (payloadRecord.max_tokens) {
+            ollamaPayload.options.num_predict = payloadRecord.max_tokens;
+          }
+          if (payloadRecord.temperature !== undefined) {
+            ollamaPayload.options.temperature = payloadRecord.temperature;
+          }
+          
+          try {
+            const upstreamResponse = await fetch(upstreamUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(ollamaPayload)
+            });
+
+            let upstreamText = await upstreamResponse.text();
+            if (upstreamResponse.ok) {
+              try {
+                const parsed = JSON.parse(upstreamText);
+                if (parsed.message) {
+                  const compatResponse = {
+                    choices: [{ message: parsed.message }]
+                  };
+                  upstreamText = JSON.stringify(compatResponse);
+                }
+              } catch {
+                // Ignore parse errors
+              }
+            }
+            
+            const upstreamContentType = upstreamResponse.headers.get('content-type') || 'application/json; charset=utf-8';
+            return sendRaw(res, upstreamResponse.status, upstreamContentType, upstreamText);
+          } catch {
+            return sendJson(res, 502, { error: 'upstream_unreachable' });
+          }
         } else {
           return sendJson(res, 400, { error: 'unsupported_provider' });
         }
 
-        try {
-          const upstreamResponse = await fetch(upstreamUrl, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(payload)
-          });
+        if (provider === 'openrouter') {
+          try {
+            const upstreamResponse = await fetch(upstreamUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(payload)
+            });
 
-          const upstreamText = await upstreamResponse.text();
-          const upstreamContentType = upstreamResponse.headers.get('content-type') || 'application/json; charset=utf-8';
-          return sendRaw(res, upstreamResponse.status, upstreamContentType, upstreamText);
-        } catch {
-          return sendJson(res, 502, { error: 'upstream_unreachable' });
+            const upstreamText = await upstreamResponse.text();
+            const upstreamContentType = upstreamResponse.headers.get('content-type') || 'application/json; charset=utf-8';
+            return sendRaw(res, upstreamResponse.status, upstreamContentType, upstreamText);
+          } catch {
+            return sendJson(res, 502, { error: 'upstream_unreachable' });
+          }
         }
       }
 
@@ -372,13 +420,14 @@ const providerProxyMiddlewarePlugin = () => ({
 
       if (path === '/gemini/generate') {
         const payload = typeof body.payload === 'object' && body.payload !== null ? body.payload : null;
-        if (!payload || typeof payload.requestBody !== 'object' || payload.requestBody === null) {
+        const payloadRecord = payload as Record<string, any>;
+        if (!payloadRecord || typeof payloadRecord.requestBody !== 'object' || payloadRecord.requestBody === null) {
           return sendJson(res, 400, { error: 'missing_payload' });
         }
 
         const model =
-          typeof payload.model === 'string' && payload.model.trim().length > 0
-            ? payload.model.trim()
+          typeof payloadRecord.model === 'string' && payloadRecord.model.trim().length > 0
+            ? payloadRecord.model.trim()
             : 'gemini-1.5-flash-latest';
         const modelCandidates = Array.from(
           new Set([model, 'gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-2.0-flash'])
@@ -395,7 +444,7 @@ const providerProxyMiddlewarePlugin = () => ({
                   'x-goog-api-key': apiKey,
                   'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(payload.requestBody)
+                body: JSON.stringify(payloadRecord.requestBody)
               }
             );
 
@@ -441,7 +490,8 @@ const providerProxyMiddlewarePlugin = () => ({
 
       if (path === '/openai/speech') {
         const payload = typeof body.payload === 'object' && body.payload !== null ? body.payload : null;
-        if (!payload || typeof payload.input !== 'string' || payload.input.trim().length === 0) {
+        const payloadRecord = payload as Record<string, any>;
+        if (!payloadRecord || typeof payloadRecord.input !== 'string' || payloadRecord.input.trim().length === 0) {
           return sendJson(res, 400, { error: 'missing_payload' });
         }
 
@@ -460,6 +510,52 @@ const providerProxyMiddlewarePlugin = () => ({
           return sendRaw(res, upstreamResponse.status, upstreamContentType, new Uint8Array(arrayBuffer));
         } catch {
           return sendJson(res, 502, { error: 'upstream_unreachable' });
+        }
+      }
+
+      if (path === '/openrouter/validate') {
+        try {
+          const upstreamResponse = await fetch('https://openrouter.ai/api/v1/auth/key', {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${apiKey}`
+            }
+          });
+
+          if (upstreamResponse.ok) {
+            return sendJson(res, 200, { valid: true });
+          }
+          if (upstreamResponse.status === 401 || upstreamResponse.status === 403) {
+            return sendJson(res, 200, { valid: false });
+          }
+          return sendJson(res, 200, { valid: true });
+        } catch {
+          return sendJson(res, 502, { valid: false, error: 'upstream_unreachable' });
+        }
+      }
+
+      if (path === '/ollama/validate') {
+        try {
+          // Send request to Ollama tags endpoint to check connectivity
+          const headers: Record<string, string> = {};
+          if (apiKey && !isLocalOllamaBaseUrl(ollamaBaseUrl)) {
+            headers.Authorization = `Bearer ${apiKey}`;
+          }
+          
+          const upstreamResponse = await fetch(`${ollamaBaseUrl}/api/tags`, {
+            method: 'GET',
+            headers
+          });
+
+          if (upstreamResponse.ok) {
+            return sendJson(res, 200, { valid: true });
+          }
+          if (upstreamResponse.status === 401 || upstreamResponse.status === 403) {
+            return sendJson(res, 200, { valid: false });
+          }
+          return sendJson(res, 200, { valid: true });
+        } catch {
+          return sendJson(res, 502, { valid: false, error: 'upstream_unreachable' });
         }
       }
 

@@ -151,9 +151,11 @@ export class OpenAiCompatibleLlmService {
       }
 
       try {
-        const parsed = JSON.parse(candidate.slice(firstBraceIndex, lastBraceIndex + 1));
+        const substring = candidate.slice(firstBraceIndex, lastBraceIndex + 1);
+        const parsed = JSON.parse(substring);
         return parsed && typeof parsed === 'object' ? (parsed as JsonRecord) : null;
-      } catch {
+      } catch (e) {
+        console.error('Failed to parse JSON substring:', e);
         return null;
       }
     }
@@ -242,10 +244,15 @@ export class OpenAiCompatibleLlmService {
   private formatApiError(response: Response, errorText: string): string {
     const detail = this.summarizeErrorBody(errorText);
     const statusText = response.statusText || 'Request Failed';
+    
+    if (response.status === 400 && errorText.includes('missing_or_invalid_api_key')) {
+      return `${this.provider.toUpperCase()} API 金鑰缺失或無效，請於設定面板輸入有效的 API 金鑰。`;
+    }
+    
     return `${this.provider.toUpperCase()} API 錯誤: ${response.status} ${statusText}${detail ? ` - ${detail}` : ''}`;
   }
 
-  private async requestChatCompletions(payload: Record<string, unknown>): Promise<Response> {
+  private async requestChatCompletions(payload: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<Response> {
     const allowAnonymousLocalOllama = this.isLocalOllamaBaseUrl();
 
     if (
@@ -277,16 +284,21 @@ export class OpenAiCompatibleLlmService {
               ...payload,
               model: this.model
             }
-          })
+          }),
+          signal: options?.signal
         });
 
-        if (proxyResponse.status === 404 || proxyResponse.status === 405) {
+        const isFromProxy = proxyResponse.headers.get('x-proxy-handled') === '1';
+        if (!isFromProxy && (proxyResponse.status === 404 || proxyResponse.status === 405)) {
           unavailableCount += 1;
           continue;
         }
 
         return proxyResponse;
-      } catch {
+      } catch (error) {
+        if (options?.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          throw error;
+        }
         unavailableCount += 1;
       }
     }
@@ -300,7 +312,7 @@ export class OpenAiCompatibleLlmService {
     throw new Error(`${this.provider.toUpperCase()} request failed via proxy.`);
   }
 
-  async researchTopic(topic: string): Promise<ResearchResult> {
+  async researchTopic(topic: string, options?: { signal?: AbortSignal }): Promise<ResearchResult> {
     const payload = {
       messages: [
         {
@@ -318,15 +330,23 @@ export class OpenAiCompatibleLlmService {
       max_tokens: 4000
     };
 
-    const response = await this.requestChatCompletions(payload);
+    const response = await this.requestChatCompletions(payload, options);
+    const errorText = await response.text().catch(() => '');
+
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
       throw new Error(this.formatApiError(response, errorText));
     }
 
-    const data = await response.json();
-    const content = safeString(data?.choices?.[0]?.message?.content);
-    const parsedContent = this.extractJsonRecord(content);
+    let parsedContent: JsonRecord | null = null;
+    let content = '';
+    
+    try {
+       const data = JSON.parse(errorText);
+       content = safeString(data?.choices?.[0]?.message?.content);
+       parsedContent = this.extractJsonRecord(content);
+    } catch (e) {
+       console.error('Failed to parse response JSON:', e);
+    }
 
     return {
       topic,
@@ -337,7 +357,7 @@ export class OpenAiCompatibleLlmService {
     };
   }
 
-  async generateOutline(research: ResearchResult): Promise<Outline> {
+  async generateOutline(research: ResearchResult, options?: { signal?: AbortSignal }): Promise<Outline> {
     const payload = {
       messages: [
         {
@@ -358,15 +378,24 @@ export class OpenAiCompatibleLlmService {
       max_tokens: 3200
     };
 
-    const response = await this.requestChatCompletions(payload);
+    const response = await this.requestChatCompletions(payload, options);
+    const errorText = await response.text().catch(() => '');
+
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
       throw new Error(this.formatApiError(response, errorText));
     }
 
-    const data = await response.json();
-    const content = safeString(data?.choices?.[0]?.message?.content);
-    const parsedContent = this.extractJsonRecord(content);
+    let parsedContent: JsonRecord | null = null;
+    let content = '';
+
+    try {
+      const data = JSON.parse(errorText);
+      content = safeString(data?.choices?.[0]?.message?.content);
+      parsedContent = this.extractJsonRecord(content);
+    } catch (e) {
+      console.error('Failed to parse response JSON:', e);
+    }
+    
     const sections = safeSectionArray(parsedContent?.sections);
 
     return {
@@ -384,107 +413,113 @@ export class OpenAiCompatibleLlmService {
     };
   }
 
-  async generatePodcastScript(outline: Outline, research: ResearchResult): Promise<Script> {
-    const payload = {
-      messages: [
-        {
-          role: 'system',
-          content:
-            '你是一位專業播客編劇。請輸出 JSON 物件，包含 title 與 sections。' +
-            'sections 必須是陣列，每個元素包含 id、title、dialogues。' +
-            'dialogues 每項包含 speaker(host/expert)、text、pauseAfter(可選)。' +
-            '請輸出完整逐字稿，不可摘要化，不要輸出 JSON 以外內容。'
-        },
-        {
-          role: 'user',
-          content:
-            `播客標題：${outline.title}\n` +
-            `播客描述：${outline.description}\n` +
-            `研究摘要：${research.summary}\n` +
-            `研究關鍵要點：${research.keyPoints.join('；')}\n` +
-            `大綱段落：\n${outline.sections.map((section, index) => `${index + 1}. id=${section.id}, title=${section.title}, keyPoints=${section.keyPoints.join('、')}, duration=${section.duration}s`).join('\n')}`
-        }
-      ],
-      max_tokens: 4000
-    };
-
-    const response = await this.requestChatCompletions(payload);
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new Error(this.formatApiError(response, errorText));
-    }
-
-    const data = await response.json();
-    const content = safeString(data?.choices?.[0]?.message?.content);
-    const parsed = this.extractJsonRecord(content);
+  async generatePodcastScript(
+    outline: Outline,
+    research: ResearchResult,
+    options?: { signal?: AbortSignal; onProgress?: (text: string) => void }
+  ): Promise<Script> {
     const idSeed = Date.now();
+    let allDialogues: Dialogue[] = [];
+    const scriptSections: ScriptSection[] = [];
 
-    let dialogues: Dialogue[] = [];
-    let sections: ScriptSection[] = [];
+    let previousContext = '';
 
-    if (parsed && Array.isArray(parsed.sections)) {
-      const parsedSections = parsed.sections
-        .map((section): { sectionId: string; title: string; dialogues: Dialogue[] } | null => {
-          if (!section || typeof section !== 'object') {
-            return null;
-          }
-          const sectionObject = section as JsonRecord;
-          const sectionId = safeString(sectionObject.id);
-          const title = safeString(sectionObject.title);
-          const sectionDialogues = this.normalizeDialogues(sectionObject.dialogues, idSeed + dialogues.length);
-          if (!sectionId || sectionDialogues.length === 0) {
-            return null;
-          }
-          return {
-            sectionId,
-            title: title || sectionId,
-            dialogues: sectionDialogues
-          };
-        })
-        .filter((section): section is { sectionId: string; title: string; dialogues: Dialogue[] } => section !== null);
-
-      if (parsedSections.length > 0) {
-        for (const section of parsedSections) {
-          dialogues = dialogues.concat(section.dialogues);
-        }
-
-        sections = outline.sections.map((outlineSection) => {
-          const matched = parsedSections.find((section) => section.sectionId === outlineSection.id) ||
-            parsedSections.find((section) => section.title === outlineSection.title);
-          return {
-            id: outlineSection.id,
-            title: outlineSection.title,
-            dialogueIds: matched ? matched.dialogues.map((dialogue) => dialogue.id) : []
-          };
-        });
+    for (let i = 0; i < outline.sections.length; i++) {
+      const section = outline.sections[i];
+      
+      if (options?.onProgress) {
+        options.onProgress(`正在撰寫段落 ${i + 1}/${outline.sections.length}: ${section.title}`);
       }
-    }
 
-    if (dialogues.length === 0) {
-      dialogues = this.parseDialogues(content);
-    }
+      const payload = {
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是一位專業播客編劇。請嚴格輸出 JSON 陣列，包含該段落的對話。不要有 JSON 以外的文字。' +
+              '陣列中每個元素必須包含 speaker(host/expert)、text、pauseAfter(可選)。' +
+              '請輸出完整逐字稿，不可摘要化。'
+          },
+          {
+            role: 'user',
+            content:
+              `播客標題：${outline.title}\n` +
+              `研究摘要：${research.summary}\n` +
+              `目前段落：${section.title}\n` +
+              `本段重點：${section.keyPoints.join('；')}\n` +
+              `預計長度：${section.duration} 秒\n` +
+              (previousContext ? `前一段結尾：\n${previousContext}\n\n請順暢接續上一段。` : '')
+          }
+        ],
+        max_tokens: 3000
+      };
 
-    if (dialogues.length === 0) {
-      throw new Error(`${this.provider.toUpperCase()} 腳本解析失敗。`);
-    }
+      const response = await this.requestChatCompletions(payload, options);
+      const errorText = await response.text().catch(() => '');
 
-    if (sections.length === 0) {
-      sections = outline.sections.map((section, index) => {
-        const start = Math.floor((index * dialogues.length) / outline.sections.length);
-        const end = Math.floor(((index + 1) * dialogues.length) / outline.sections.length);
-        return {
-          id: section.id,
-          title: section.title,
-          dialogueIds: dialogues.slice(start, end).map((dialogue) => dialogue.id)
-        };
+      if (!response.ok) {
+        throw new Error(this.formatApiError(response, errorText));
+      }
+
+      let content = '';
+      try {
+        const data = JSON.parse(errorText);
+        content = safeString(data?.choices?.[0]?.message?.content);
+      } catch (e) {
+        console.error('Failed to parse response JSON:', e);
+      }
+      
+      let parsedJson: JsonRecord | JsonRecord[] | null = null;
+      try {
+        const candidate = content.match(/```(?:json)?\s*(\[[\s\S]*\])\s*```/i)?.[1] || content;
+        
+        const firstBracket = candidate.indexOf('[');
+        const lastBracket = candidate.lastIndexOf(']');
+        if (firstBracket !== -1 && lastBracket >= firstBracket) {
+          parsedJson = JSON.parse(candidate.slice(firstBracket, lastBracket + 1));
+        } else {
+          const record = this.extractJsonRecord(content);
+          if (record && Array.isArray(record.dialogues)) {
+             parsedJson = record.dialogues;
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to parse section ${i + 1} response JSON array:`, e);
+      }
+
+      let sectionDialogues = this.normalizeDialogues(parsedJson, idSeed + allDialogues.length);
+      if (sectionDialogues.length === 0) {
+        sectionDialogues = this.parseDialogues(content);
+      }
+      
+      if (sectionDialogues.length === 0) {
+        throw new Error(`${this.provider.toUpperCase()} 腳本解析失敗 (段落: ${section.title})。請重試或更換提供商。`);
+      }
+
+      const startIndex = allDialogues.length + 1;
+      sectionDialogues = sectionDialogues.map((d, idx) => ({ ...d, id: `dialogue_${idSeed}_${startIndex + idx}` }));
+      
+      allDialogues = allDialogues.concat(sectionDialogues);
+      
+      scriptSections.push({
+        id: section.id,
+        title: section.title,
+        dialogueIds: sectionDialogues.map((d) => d.id)
       });
+      
+      const lastDialogues = sectionDialogues.slice(-3);
+      previousContext = lastDialogues.map((d) => `${d.speaker === 'host' ? '主持人' : '專家'}: ${d.text}`).join('\n');
+      
+      if (i < outline.sections.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
     }
 
     return {
       id: `script_${Date.now()}`,
-      title: safeString(parsed?.title, outline.title),
-      dialogues,
-      sections,
+      title: outline.title,
+      sections: scriptSections,
+      dialogues: allDialogues,
       totalDuration: Math.max(600, outline.sections.reduce((sum, section) => sum + section.duration, 0))
     };
   }

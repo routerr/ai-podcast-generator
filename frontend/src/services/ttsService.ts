@@ -50,7 +50,8 @@ export class TTSService {
   private async synthesizeDialogueWithOpenAI(
     dialogue: Dialogue,
     apiKey: string,
-    options: OpenAITTSOptions
+    options: OpenAITTSOptions,
+    signal?: AbortSignal
   ): Promise<Blob> {
     const normalizedApiKey = apiKey.trim().replace(/^Bearer\s+/i, '');
     if (!normalizedApiKey || normalizedApiKey.length <= 10 || normalizedApiKey.length > MAX_API_KEY_LENGTH) {
@@ -72,6 +73,7 @@ export class TTSService {
       try {
         const response = await fetch(endpoint, {
           method: 'POST',
+          signal,
           headers: {
             'Content-Type': 'application/json'
           },
@@ -81,7 +83,8 @@ export class TTSService {
           })
         });
 
-        if (response.status === 404 || response.status === 405) {
+        const isFromProxy = response.headers.get('x-proxy-handled') === '1';
+        if (!isFromProxy && (response.status === 404 || response.status === 405)) {
           unavailableCount += 1;
           continue;
         }
@@ -176,7 +179,8 @@ export class TTSService {
     expertVoice: string,
     onProgress?: (progress: number) => void,
     openaiKey?: string,
-    rate = 1.0
+    rate = 1.0,
+    signal?: AbortSignal
   ): Promise<Blob[]> {
     if (!openaiKey) {
       throw new Error('OpenAI API key is required for downloadable podcast audio.');
@@ -196,7 +200,7 @@ export class TTSService {
         model: 'tts-1',
         response_format: 'mp3',
         speed: Math.max(0.5, Math.min(2, rate))
-      });
+      }, signal);
 
       audioBlobs.push(audioBlob);
 

@@ -11,12 +11,16 @@ type KeyStatus = {
   perplexityValid: boolean | null;
   geminiValid: boolean | null;
   openaiValid: boolean | null;
+  openrouterValid: boolean | null;
+  ollamaValid: boolean | null;
 };
 
 type KeyErrors = {
   perplexityError: string | null;
   geminiError: string | null;
   openaiError: string | null;
+  openrouterError: string | null;
+  ollamaError: string | null;
 };
 
 type KeyStatusName = keyof KeyStatus;
@@ -75,13 +79,17 @@ export const useApiKeys = () => {
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({
     perplexityValid: null,
     geminiValid: null,
-    openaiValid: null
+    openaiValid: null,
+    openrouterValid: null,
+    ollamaValid: null
   });
 
   const [keyErrors, setKeyErrors] = useState<KeyErrors>({
     perplexityError: null,
     geminiError: null,
-    openaiError: null
+    openaiError: null,
+    openrouterError: null,
+    ollamaError: null
   });
 
   const persistKeyStatus = (status: KeyStatus) => {
@@ -102,7 +110,8 @@ export const useApiKeys = () => {
 
   const testViaProxy = async (
     apiKey: string,
-    endpoints: string[]
+    endpoints: string[],
+    extraBody?: Record<string, unknown>
   ): Promise<{ valid: boolean | null; error?: string }> => {
     let sawProxyError = false;
     let sawReachableProxy = false;
@@ -115,7 +124,7 @@ export const useApiKeys = () => {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ apiKey })
+          body: JSON.stringify({ apiKey, ...extraBody })
         });
 
         if (response.status === 404 || response.status === 405) {
@@ -159,7 +168,7 @@ export const useApiKeys = () => {
     return { valid: sawProxyError ? null : false, error: latestError };
   };
 
-  const mapValidationError = (provider: 'perplexity' | 'gemini' | 'openai', code?: string): string | null => {
+  const mapValidationError = (provider: 'perplexity' | 'gemini' | 'openai' | 'openrouter' | 'ollama', code?: string): string | null => {
     if (!code) return null;
 
     if (provider === 'perplexity') {
@@ -192,6 +201,20 @@ export const useApiKeys = () => {
       return null;
     }
 
+    if (provider === 'openrouter') {
+      if (code === 'upstream_unreachable' || code === 'proxy_unreachable') {
+        return 'OpenRouter validation service is temporarily unreachable.';
+      }
+      return null;
+    }
+
+    if (provider === 'ollama') {
+      if (code === 'upstream_unreachable' || code === 'proxy_unreachable') {
+        return 'Ollama endpoint is unreachable. Please verify your Base URL.';
+      }
+      return null;
+    }
+
     return null;
   };
 
@@ -205,6 +228,8 @@ export const useApiKeys = () => {
     const storedPerplexityValid = storageService.getApiKeyStatus('perplexityValid');
     const storedGeminiValid = storageService.getApiKeyStatus('geminiValid');
     const storedOpenaiValid = storageService.getApiKeyStatus('openaiValid');
+    const storedOpenrouterValid = storageService.getApiKeyStatus('openrouterValid');
+    const storedOllamaValid = storageService.getApiKeyStatus('ollamaValid');
 
     const perplexityKey = sanitizeApiKeyLength(normalizeBearerApiKey(storedPerplexityKey));
     const geminiKey = sanitizeApiKeyLength(trimApiKey(storedGeminiKey));
@@ -239,13 +264,17 @@ export const useApiKeys = () => {
     setKeyErrors({
       perplexityError: null,
       geminiError: null,
-      openaiError: null
+      openaiError: null,
+      openrouterError: null,
+      ollamaError: null
     });
 
     const initialKeyStatus: KeyStatus = {
       perplexityValid: perplexityKey ? (storedPerplexityValid ?? null) : false,
       geminiValid: geminiKey ? (storedGeminiValid ?? null) : false,
-      openaiValid: openaiKey ? (storedOpenaiValid ?? null) : false
+      openaiValid: openaiKey ? (storedOpenaiValid ?? null) : false,
+      openrouterValid: openrouterKey ? (storedOpenrouterValid ?? null) : false,
+      ollamaValid: storedOllamaValid ?? false
     };
     setKeyStatus(initialKeyStatus);
     persistKeyStatus(initialKeyStatus);
@@ -300,6 +329,11 @@ export const useApiKeys = () => {
       ...prev,
       openrouterKey: normalizedKey
     }));
+    setAndPersistKeyStatus((prev: KeyStatus) => ({
+      ...prev,
+      openrouterValid: normalizedKey ? (prev.openrouterValid === true ? true : null) : false
+    }));
+    setKeyErrors((prev) => ({ ...prev, openrouterError: null }));
   };
 
   const saveOllamaKey = (key: string) => {
@@ -309,6 +343,11 @@ export const useApiKeys = () => {
       ...prev,
       ollamaKey: normalizedKey
     }));
+    setAndPersistKeyStatus((prev: KeyStatus) => ({
+      ...prev,
+      ollamaValid: prev.ollamaValid === true ? true : null
+    }));
+    setKeyErrors((prev) => ({ ...prev, ollamaError: null }));
   };
 
   const clearAllKeys = () => {
@@ -323,12 +362,16 @@ export const useApiKeys = () => {
     setAndPersistKeyStatus(() => ({
       perplexityValid: false,
       geminiValid: false,
-      openaiValid: false
+      openaiValid: false,
+      openrouterValid: false,
+      ollamaValid: false
     }));
     setKeyErrors({
       perplexityError: null,
       geminiError: null,
-      openaiError: null
+      openaiError: null,
+      openrouterError: null,
+      ollamaError: null
     });
   };
 
@@ -357,6 +400,23 @@ export const useApiKeys = () => {
       openaiValid: normalizedKey ? null : false
     }));
     setKeyErrors((prev) => ({ ...prev, openaiError: null }));
+  };
+
+  const markOpenrouterKeyEdited = (key: string) => {
+    const normalizedKey = sanitizeApiKeyLength(normalizeBearerApiKey(key));
+    setAndPersistKeyStatus((prev: KeyStatus) => ({
+      ...prev,
+      openrouterValid: normalizedKey ? null : false
+    }));
+    setKeyErrors((prev) => ({ ...prev, openrouterError: null }));
+  };
+
+  const markOllamaKeyEdited = () => {
+    setAndPersistKeyStatus((prev: KeyStatus) => ({
+      ...prev,
+      ollamaValid: null
+    }));
+    setKeyErrors((prev) => ({ ...prev, ollamaError: null }));
   };
 
   const testPerplexityKey = async (key: string): Promise<boolean | null> => {
@@ -463,6 +523,64 @@ export const useApiKeys = () => {
     return result.valid;
   };
 
+  const testOpenrouterKey = async (key: string): Promise<boolean | null> => {
+    const trimmedKey = normalizeBearerApiKey(key);
+    if (!validateApiKey(trimmedKey)) {
+      setAndPersistKeyStatus((prev: KeyStatus) => ({
+        ...prev,
+        openrouterValid: false
+      }));
+      setKeyErrors((prev) => ({
+        ...prev,
+        openrouterError: 'API key is empty or malformed.'
+      }));
+      return false;
+    }
+
+    const result = await testViaProxy(
+      trimmedKey,
+      getProxyEndpoints('/openrouter/validate', ['/openrouter/validate'])
+    );
+
+    setAndPersistKeyStatus((prev: KeyStatus) => ({
+      ...prev,
+      openrouterValid: result.valid
+    }));
+    setKeyErrors((prev) => ({
+      ...prev,
+      openrouterError:
+        result.valid === true
+          ? null
+          : mapValidationError('openrouter', result.error) ||
+            (result.valid === false ? 'OpenRouter key appears invalid.' : 'Validation was inconclusive. Please retry.')
+    }));
+    return result.valid;
+  };
+
+  const testOllamaKey = async (key: string, baseUrl: string): Promise<boolean | null> => {
+    const trimmedKey = normalizeBearerApiKey(key);
+
+    const result = await testViaProxy(
+      trimmedKey,
+      getProxyEndpoints('/ollama/validate', ['/ollama/validate']),
+      { baseUrl }
+    );
+
+    setAndPersistKeyStatus((prev: KeyStatus) => ({
+      ...prev,
+      ollamaValid: result.valid
+    }));
+    setKeyErrors((prev) => ({
+      ...prev,
+      ollamaError:
+        result.valid === true
+          ? null
+          : mapValidationError('ollama', result.error) ||
+            (result.valid === false ? 'Ollama connection or auth failed.' : 'Validation was inconclusive. Please retry.')
+    }));
+    return result.valid;
+  };
+
   return {
     apiKeys,
     keyStatus,
@@ -476,8 +594,12 @@ export const useApiKeys = () => {
     markPerplexityKeyEdited,
     markGeminiKeyEdited,
     markOpenaiKeyEdited,
+    markOpenrouterKeyEdited,
+    markOllamaKeyEdited,
     testPerplexityKey,
     testGeminiKey,
-    testOpenaiKey
+    testOpenaiKey,
+    testOpenrouterKey,
+    testOllamaKey
   };
 };

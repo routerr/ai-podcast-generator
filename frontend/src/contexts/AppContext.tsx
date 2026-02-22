@@ -71,10 +71,10 @@ const initialState: AppState = {
     language: 'en',
     format: 'dialogue',
     length: 'medium',
-    llmPrimaryProvider: 'gemini',
-    llmFallbackProvider: 'perplexity',
-    openrouterModel: 'meta-llama/llama-3.3-70b-instruct:free',
-    ollamaModel: 'llama3.1:8b',
+    llmPrimaryProvider: 'ollama',
+    llmFallbackProvider: 'openrouter',
+    openrouterModel: 'openai/gpt-oss-20b:free',
+    ollamaModel: 'minimax-m2.5:cloud',
     ollamaBaseUrl: 'https://api.ollama.com'
   },
   podcastState: {

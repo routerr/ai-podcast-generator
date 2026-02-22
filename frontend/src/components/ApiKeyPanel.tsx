@@ -28,9 +28,13 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
     markPerplexityKeyEdited,
     markGeminiKeyEdited,
     markOpenaiKeyEdited,
+    markOpenrouterKeyEdited,
+    markOllamaKeyEdited,
     testPerplexityKey,
     testGeminiKey,
-    testOpenaiKey
+    testOpenaiKey,
+    testOpenrouterKey,
+    testOllamaKey
   } = useApiKeys();
 
   const { apiKeys: appApiKeys, config, dispatch } = useAppContext();
@@ -51,10 +55,14 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
   const [isTestingPerplexity, setIsTestingPerplexity] = useState(false);
   const [isTestingGemini, setIsTestingGemini] = useState(false);
   const [isTestingOpenai, setIsTestingOpenai] = useState(false);
+  const [isTestingOpenrouter, setIsTestingOpenrouter] = useState(false);
+  const [isTestingOllama, setIsTestingOllama] = useState(false);
 
   const [testedPerplexityKey, setTestedPerplexityKey] = useState('');
   const [testedGeminiKey, setTestedGeminiKey] = useState('');
   const [testedOpenaiKey, setTestedOpenaiKey] = useState('');
+  const [testedOpenrouterKey, setTestedOpenrouterKey] = useState('');
+  const [testedOllamaKey, setTestedOllamaKey] = useState('');
 
   const normalizeWrapping = (key: string) => {
     let normalized = key.trim();
@@ -105,12 +113,29 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
     testedOpenaiKey.length > 0 &&
     testedOpenaiKey === normalizedOpenaiKey;
 
+  const canApplyOpenrouter =
+    keyStatus.openrouterValid !== false &&
+    testedOpenrouterKey.length > 0 &&
+    testedOpenrouterKey === normalizedOpenrouterKey;
+
   const allowAnonymousLocalOllama = useMemo(
     () => isLocalOllamaBaseUrl(config.ollamaBaseUrl),
     [config.ollamaBaseUrl]
   );
 
-  const canApplyOllama = normalizedOllamaKey.length > 0 || allowAnonymousLocalOllama;
+  const canApplyOllama =
+    allowAnonymousLocalOllama ||
+    (keyStatus.ollamaValid !== false &&
+      testedOllamaKey.length > 0 &&
+      testedOllamaKey === normalizedOllamaKey);
+
+  const selectedProviders = useMemo(() => {
+    const list = [config.llmPrimaryProvider];
+    if (config.llmFallbackProvider !== 'none' && config.llmFallbackProvider !== config.llmPrimaryProvider) {
+      list.push(config.llmFallbackProvider);
+    }
+    return list;
+  }, [config.llmPrimaryProvider, config.llmFallbackProvider]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -126,6 +151,8 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
     setTestedPerplexityKey('');
     setTestedGeminiKey('');
     setTestedOpenaiKey('');
+    setTestedOpenrouterKey('');
+    setTestedOllamaKey('');
   }, [apiKeys, isOpen]);
 
   const updateConfig = (patch: Partial<typeof config>) => {
@@ -212,6 +239,40 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
     }
   };
 
+  const handleTestOpenrouterKey = async () => {
+    if (!normalizedOpenrouterKey) {
+      return;
+    }
+
+    setIsTestingOpenrouter(true);
+    const validation = await testOpenrouterKey(normalizedOpenrouterKey);
+    setIsTestingOpenrouter(false);
+    setTestedOpenrouterKey(validation === false ? '' : normalizedOpenrouterKey);
+
+    if (validation !== false) {
+      saveOpenrouterKey(normalizedOpenrouterKey);
+      syncApiKeysToContext({ openrouterKey: normalizedOpenrouterKey });
+      setOpenrouterKey(normalizedOpenrouterKey);
+    }
+  };
+
+  const handleTestOllamaKey = async () => {
+    if (!normalizedOllamaKey && !allowAnonymousLocalOllama) {
+      return;
+    }
+
+    setIsTestingOllama(true);
+    const validation = await testOllamaKey(normalizedOllamaKey, config.ollamaBaseUrl);
+    setIsTestingOllama(false);
+    setTestedOllamaKey(validation === false ? '' : normalizedOllamaKey);
+
+    if (validation !== false) {
+      saveOllamaKey(normalizedOllamaKey);
+      syncApiKeysToContext({ ollamaKey: normalizedOllamaKey });
+      setOllamaKey(normalizedOllamaKey);
+    }
+  };
+
   const handleApplyPerplexityKey = () => {
     if (!canApplyPerplexity) {
       return;
@@ -267,6 +328,8 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
     setTestedPerplexityKey('');
     setTestedGeminiKey('');
     setTestedOpenaiKey('');
+    setTestedOpenrouterKey('');
+    setTestedOllamaKey('');
 
     dispatch({
       type: 'SET_API_KEYS',
@@ -356,6 +419,7 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {selectedProviders.includes('openrouter') && (
                 <div className="space-y-2 md:col-span-2">
                   <label className="block text-sm font-medium espresso-muted">{t('api.openrouterModel')}</label>
                   <input
@@ -363,10 +427,12 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
                     value={config.openrouterModel}
                     onChange={(event) => updateConfig({ openrouterModel: event.target.value })}
                     className="w-full rounded-lg px-3 py-2 espresso-input"
-                    placeholder="meta-llama/llama-3.3-70b-instruct:free"
+                    placeholder="openai/gpt-oss-20b:free"
                   />
                 </div>
+                )}
 
+                {selectedProviders.includes('ollama') && (
                 <div className="space-y-2">
                   <label className="block text-sm font-medium espresso-muted">{t('api.ollamaModel')}</label>
                   <input
@@ -374,11 +440,13 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
                     value={config.ollamaModel}
                     onChange={(event) => updateConfig({ ollamaModel: event.target.value })}
                     className="w-full rounded-lg px-3 py-2 espresso-input"
-                    placeholder="llama3.1:8b"
+                    placeholder="minimax-m2.5:cloud"
                   />
                 </div>
+                )}
               </div>
 
+              {selectedProviders.includes('ollama') && (
               <div className="space-y-2">
                 <label className="block text-sm font-medium espresso-muted">{t('api.ollamaBaseUrl')}</label>
                 <input
@@ -390,8 +458,10 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
                 />
                 <p className="text-xs espresso-muted">{t('api.ollamaLocalNoKeyHint')}</p>
               </div>
+              )}
             </div>
 
+            {selectedProviders.includes('perplexity') && (
             <div className="space-y-3">
               <label className="block text-sm font-medium espresso-muted">{t('api.perplexityLabel')}</label>
               <div className="relative">
@@ -446,7 +516,9 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
 
               {keyErrors.perplexityError && <p className="text-xs text-[#f9e2af]">{keyErrors.perplexityError}</p>}
             </div>
+            )}
 
+            {selectedProviders.includes('gemini') && (
             <div className="space-y-3">
               <label className="block text-sm font-medium espresso-muted">{t('api.geminiLabel')}</label>
               <div className="relative">
@@ -501,14 +573,23 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
 
               {keyErrors.geminiError && <p className="text-xs text-[#f9e2af]">{keyErrors.geminiError}</p>}
             </div>
+            )}
 
+            {selectedProviders.includes('openrouter') && (
             <div className="space-y-3">
               <label className="block text-sm font-medium espresso-muted">{t('api.openrouterLabel')}</label>
               <div className="relative">
                 <input
                   type={showOpenrouterKey ? 'text' : 'password'}
                   value={openrouterKey}
-                  onChange={(event) => setOpenrouterKey(event.target.value)}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setOpenrouterKey(nextValue);
+                    markOpenrouterKeyEdited(nextValue);
+                    if (normalizeApiKey(nextValue) !== testedOpenrouterKey) {
+                      setTestedOpenrouterKey('');
+                    }
+                  }}
                   placeholder={t('api.openrouterPlaceholder')}
                   className="w-full rounded-lg px-4 py-3 pr-12 espresso-input"
                 />
@@ -523,26 +604,51 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
                 </button>
               </div>
 
-              <div className="flex items-center justify-end">
-                <button
-                  onClick={handleApplyOpenrouterKey}
-                  disabled={!normalizedOpenrouterKey}
-                  className="px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors espresso-btn-primary"
-                >
-                  {t('api.apply')}
-                </button>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {renderKeyStatus(keyStatus.openrouterValid)}
+                  <span className="text-sm espresso-muted">{keyStatusText(keyStatus.openrouterValid)}</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleTestOpenrouterKey}
+                    disabled={!normalizedOpenrouterKey || isTestingOpenrouter}
+                    className="px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors espresso-btn-secondary"
+                  >
+                    {isTestingOpenrouter ? t('api.testing') : t('api.test')}
+                  </button>
+                  <button
+                    onClick={handleApplyOpenrouterKey}
+                    disabled={!canApplyOpenrouter}
+                    className="px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors espresso-btn-primary"
+                  >
+                    {t('api.apply')}
+                  </button>
+                </div>
               </div>
 
+              {keyErrors.openrouterError && <p className="text-xs text-[#f9e2af]">{keyErrors.openrouterError}</p>}
+              
               <p className="text-xs espresso-muted">{t('api.runtimeValidationHint')}</p>
             </div>
+            )}
 
+            {selectedProviders.includes('ollama') && (
             <div className="space-y-3">
               <label className="block text-sm font-medium espresso-muted">{t('api.ollamaLabel')}</label>
               <div className="relative">
                 <input
                   type={showOllamaKey ? 'text' : 'password'}
                   value={ollamaKey}
-                  onChange={(event) => setOllamaKey(event.target.value)}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setOllamaKey(nextValue);
+                    markOllamaKeyEdited();
+                    if (normalizeApiKey(nextValue) !== testedOllamaKey) {
+                      setTestedOllamaKey('');
+                    }
+                  }}
                   placeholder={t('api.ollamaPlaceholder')}
                   className="w-full rounded-lg px-4 py-3 pr-12 espresso-input"
                 />
@@ -557,18 +663,35 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
                 </button>
               </div>
 
-              <div className="flex items-center justify-end">
-                <button
-                  onClick={handleApplyOllamaKey}
-                  disabled={!canApplyOllama}
-                  className="px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors espresso-btn-primary"
-                >
-                  {t('api.apply')}
-                </button>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {renderKeyStatus(keyStatus.ollamaValid)}
+                  <span className="text-sm espresso-muted">{keyStatusText(keyStatus.ollamaValid)}</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleTestOllamaKey}
+                    disabled={(allowAnonymousLocalOllama && !normalizedOllamaKey) ? false : (!normalizedOllamaKey || isTestingOllama)}
+                    className="px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors espresso-btn-secondary"
+                  >
+                    {isTestingOllama ? t('api.testing') : t('api.test')}
+                  </button>
+                  <button
+                    onClick={handleApplyOllamaKey}
+                    disabled={!canApplyOllama}
+                    className="px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors espresso-btn-primary"
+                  >
+                    {t('api.apply')}
+                  </button>
+                </div>
               </div>
 
+              {keyErrors.ollamaError && <p className="text-xs text-[#f9e2af]">{keyErrors.ollamaError}</p>}
+              
               <p className="text-xs espresso-muted">{t('api.runtimeValidationHint')}</p>
             </div>
+            )}
 
             <div className="space-y-3">
               <label className="block text-sm font-medium espresso-muted">{t('api.openaiLabel')}</label>

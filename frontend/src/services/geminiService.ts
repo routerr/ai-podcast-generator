@@ -3,7 +3,7 @@
  * 實現與 Google Gemini API 的整合，用於生成對話式播客腳本
  */
 
-import { Dialogue, Outline, OutlineSection, ResearchResult, Script, ScriptSection, Source } from '../types';
+import { Dialogue, Outline, OutlineSection, ResearchResult, Script, ScriptSection } from '../types';
 
 const LOCAL_GEMINI_GENERATE_ENDPOINT = '/gemini/generate';
 const DEPLOY_GEMINI_GENERATE_ENDPOINT = '/api/gemini/generate';
@@ -21,35 +21,7 @@ const safeStringArray = (value: unknown): string[] => {
   return value.map((item) => safeString(item)).filter((item) => item.length > 0);
 };
 
-const safeSourceArray = (value: unknown): Source[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
-    .map((source): Source | null => {
-      if (!source || typeof source !== 'object') {
-        return null;
-      }
-
-      const sourceObject = source as JsonRecord;
-      const title = safeString(sourceObject.title).trim();
-      const url = safeString(sourceObject.url).trim();
-      const snippet = safeString(sourceObject.snippet).trim();
-
-      if (!title && !url && !snippet) {
-        return null;
-      }
-
-      return {
-        title: title || url || 'Untitled source',
-        url,
-        snippet
-      };
-    })
-    .filter((item): item is Source => item !== null);
-};
-
+// safeSourceArray was removed as it is no longer used in `researchTopic`.
 const safeSectionArray = (value: unknown): OutlineSection[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -322,7 +294,8 @@ export class GeminiService {
     apiKey: string,
     prompt: string,
     maxOutputTokens: number,
-    temperature = 0.7
+    temperature = 0.7,
+    options?: { signal?: AbortSignal }
   ): Promise<string> {
     const normalizedApiKey = apiKey.trim();
     if (!normalizedApiKey || normalizedApiKey.length <= 10 || normalizedApiKey.length > MAX_API_KEY_LENGTH) {
@@ -363,10 +336,12 @@ export class GeminiService {
           body: JSON.stringify({
             apiKey: normalizedApiKey,
             payload
-          })
+          }),
+          signal: options?.signal
         });
 
-        if (response.status === 404 || response.status === 405) {
+        const isFromProxy = response.headers.get('x-proxy-handled') === '1';
+        if (!isFromProxy && (response.status === 404 || response.status === 405)) {
           unavailableCount += 1;
           continue;
         }
@@ -416,82 +391,98 @@ export class GeminiService {
   }
 
   /**
-   * 研究主題並回傳結構化結果
+   * 根據主題進行研究並摘要
    */
-  async researchTopic(apiKey: string, topic: string): Promise<ResearchResult> {
+  async researchTopic(apiKey: string, topic: string, options?: { signal?: AbortSignal }): Promise<ResearchResult> {
     try {
       const prompt = `
-你是一位資深播客研究員。請輸出 JSON 物件，且只輸出 JSON（不要 Markdown）：
+請針對主題「${topic}」進行研究，並輸出以下 JSON 格式（不要包含 markdown code blocks 等其他文字）：
 {
-  "summary": "string",
-  "keyPoints": ["string"],
+  "summary": "約 300字的綜合摘要，適合直接念。",
+  "keyPoints": ["關鍵要點1", "關鍵要點2", "關鍵要點3", "關鍵要點4", "關鍵要點5"],
   "sources": [
     {
-      "title": "string",
-      "url": "string",
-      "snippet": "string"
+      "title": "資料來源標題",
+      "url": "資料來源網址 (如果沒有可以給 'gemini-knowledge')",
+      "snippet": "資料來源的簡短說明"
     }
   ]
 }
 
 要求：
-1. summary 需完整、可直接用於寫稿（至少 6 段）。
-2. keyPoints 至少 10 條。
-3. sources 至少 6 筆，需附標題、網址、摘要。
-
-研究主題：${topic}
+1. 請盡可能提供具體、深入的知識，而非泛泛而談。
+2. keyPoints 請給 5 點以上，每點至少 30 字，需包含具體細節。
       `.trim();
 
-      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.5);
+      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.7, options);
       const parsed = this.extractJsonRecord(content);
+
+      if (!parsed) {
+        throw new Error('研究結果回傳的不是有效的 JSON 格式。');
+      }
 
       return {
         topic,
-        summary: safeString(parsed?.summary, content).trim(),
-        keyPoints: safeStringArray(parsed?.keyPoints),
-        sources: safeSourceArray(parsed?.sources),
+        summary: safeString(parsed.summary, '無法整理出摘要，請稍後重試。'),
+        keyPoints: Array.isArray(parsed.keyPoints)
+          ? parsed.keyPoints.map((kp: unknown) => String(kp))
+          : ['缺乏足夠的重點資訊'],
+        sources: Array.isArray(parsed.sources)
+          ? parsed.sources.map((src: unknown) => {
+              const srcObj = (typeof src === 'object' && src !== null ? src : {}) as Record<string, unknown>;
+              return {
+                title: safeString(srcObj.title, '無標題'),
+                url: safeString(srcObj.url, '#'),
+                snippet: safeString(srcObj.snippet, '無說明')
+              };
+            })
+          : [],
         timestamp: new Date()
       };
     } catch (error: unknown) {
       console.error('研究主題時發生錯誤:', error);
       if (error instanceof Error) {
         throw new Error(`研究主題失敗: ${error.message}`);
+      } else {
+        throw new Error('研究主題失敗: 發生未知錯誤');
       }
-      throw new Error('研究主題失敗: 發生未知錯誤');
     }
   }
 
   /**
-   * 根據研究結果生成大綱
+   * 根據研究結果生成播客大綱
    */
-  async generateOutline(apiKey: string, research: ResearchResult): Promise<Outline> {
+  async generateOutline(apiKey: string, research: ResearchResult, options?: { signal?: AbortSignal }): Promise<Outline> {
     try {
       const prompt = `
-你是一位專業播客製作人。請輸出 JSON 物件，且只輸出 JSON（不要 Markdown）：
+請根據以下研究結果，設計一個長度約 20 分鐘的播客節目大綱。
+輸出 JSON 物件：
 {
-  "title": "string",
-  "description": "string",
+  "title": "播客標題",
+  "description": "吸引人的播客簡介",
   "sections": [
     {
-      "id": "string",
-      "title": "string",
-      "keyPoints": ["string"],
+      "id": "intro",
+      "title": "開場與背景介紹",
+      "keyPoints": ["要點1", "要點2"],
       "duration": 180
-    }
+    },
+    ...
   ]
 }
 
-要求：
-1. sections 至少 8 個、至多 12 個。
-2. 每段 duration 60~300 秒，整體長度約 15~30 分鐘。
-3. 結構需包含開場、主體多段、總結與行動建議。
+提示：
+- 總共切分 5-7 個 sections（包含 intro 和 outro）。
+- 每個 section 的 duration（秒數）大約在 180 到 480 之間，使得總時長約 1200 秒（20分鐘）。
+- 必須只輸出 JSON。
 
 主題：${research.topic}
 研究摘要：${research.summary}
-關鍵要點：${research.keyPoints.join('；')}
+研究關鍵重點：
+${research.keyPoints.map((kp, i) => `${i + 1}. ${kp}`).join('\n')}
       `.trim();
 
-      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.6);
+      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.7, options);
       const parsed = this.extractJsonRecord(content);
       const sections = safeSectionArray(parsed?.sections);
 
@@ -520,139 +511,100 @@ export class GeminiService {
   /**
    * 生成對話腳本
    */
-  async generatePodcastScript(apiKey: string, outline: Outline, research: ResearchResult): Promise<Script> {
+  async generatePodcastScript(
+    apiKey: string,
+    outline: Outline,
+    research: ResearchResult,
+    options?: { signal?: AbortSignal; onProgress?: (text: string) => void }
+  ): Promise<Script> {
     try {
-      const totalOutlineDuration = outline.sections.reduce(
-        (sum, section) => sum + (Number.isFinite(section.duration) && section.duration > 0 ? section.duration : 180),
-        0
-      );
-      const targetDurationSeconds = totalOutlineDuration > 0 ? totalOutlineDuration : 1200;
-      const targetWordCount = Math.max(1400, Math.round((targetDurationSeconds / 60) * 150));
       const idSeed = Date.now();
+      let allDialogues: Dialogue[] = [];
+      const scriptSections: ScriptSection[] = [];
 
-      const prompt = `
-你是一位資深播客編劇，請產生「完整逐字稿」而非摘要。
+      let previousContext = '';
 
-請根據以下資訊生成 JSON，且只輸出 JSON（不要 Markdown）：
-{
-  "title": "string",
-  "sections": [
-    {
-      "id": "與輸入大綱一致",
-      "title": "string",
-      "dialogues": [
-        {
-          "speaker": "host 或 expert",
-          "text": "完整可朗讀句子，至少 2-5 句，不可只有摘要",
-          "emotion": "neutral|curious|excited|thoughtful (可選)",
-          "pauseAfter": 0-2500 (可選，毫秒)
+      for (let i = 0; i < outline.sections.length; i++) {
+        const section = outline.sections[i];
+
+        if (options?.onProgress) {
+          options.onProgress(`正在撰寫段落 ${i + 1}/${outline.sections.length}: ${section.title}`);
         }
-      ]
-    }
-  ]
-}
 
-內容要求：
-1. 整體長度目標約 ${targetWordCount} 字詞。
-2. 每個段落都要有主持人與專家互動，不能只有單一角色。
-3. 每個段落至少 6 句對話。
-4. 要包含清楚的開場、段落過渡、總結、行動建議。
-5. 優先使用研究資料中的具體事實和來源線索。
+        const prompt = `
+你是一位專業播客編劇。請嚴格輸出 JSON 陣列，包含該段落的對話。不要有 JSON 以外的文字。
+陣列中每個元素必須包含 speaker(host/expert)、text、pauseAfter(可選)。
+請輸出完整逐字稿，不可摘要化。
 
 播客標題：${outline.title}
-播客描述：${outline.description}
 研究摘要：${research.summary}
-研究關鍵要點：${research.keyPoints.join('；')}
-研究來源：
-${research.sources.slice(0, 15).map((source, index) => `${index + 1}. ${source.title} (${source.url}) - ${source.snippet}`).join('\n')}
+目前段落：${section.title}
+本段重點：${section.keyPoints.join('；')}
+預計長度：${section.duration} 秒
+${previousContext ? `前一段結尾：\n${previousContext}\n\n請順暢接續上一段。` : ''}
+`.trim();
 
-大綱段落：
-${outline.sections.map((section, index) => `${index + 1}. id=${section.id}, title=${section.title}, keyPoints=${section.keyPoints.join('、')}, duration=${section.duration}s`).join('\n')}
-      `.trim();
+        const content = await this.requestGeminiContent(apiKey, prompt, 8192, 0.7, options);
 
-      const content = await this.requestGeminiContent(apiKey, prompt, 8192, 0.7);
-      const parsed = this.extractJsonRecord(content);
-
-      let normalizedSectionDialogues: NormalizedSectionDialogue[] = [];
-      if (parsed && Array.isArray(parsed.sections)) {
-        let dialogueSequence = 0;
-        normalizedSectionDialogues = parsed.sections
-          .map((section): NormalizedSectionDialogue | null => {
-            if (!section || typeof section !== 'object') {
-              return null;
+        let parsedJson: JsonRecord | JsonRecord[] | null = null;
+        try {
+          const candidate = content.match(/```(?:json)?\s*(\[[\s\S]*\])\s*```/i)?.[1] || content;
+          
+          const firstBracket = candidate.indexOf('[');
+          const lastBracket = candidate.lastIndexOf(']');
+          if (firstBracket !== -1 && lastBracket >= firstBracket) {
+            parsedJson = JSON.parse(candidate.slice(firstBracket, lastBracket + 1));
+          } else {
+            const record = this.extractJsonRecord(content);
+            if (record && Array.isArray(record.dialogues)) {
+               parsedJson = record.dialogues;
             }
-
-            const sectionObject = section as JsonRecord;
-            const sectionId = safeString(sectionObject.id);
-            const sectionTitle = safeString(sectionObject.title);
-            const dialogues = this.normalizeDialogues(sectionObject.dialogues, idSeed + dialogueSequence);
-            dialogueSequence += dialogues.length + 1;
-
-            if (!sectionId || dialogues.length === 0) {
-              return null;
-            }
-
-            return {
-              sectionId,
-              title: sectionTitle || sectionId,
-              dialogues
-            };
-          })
-          .filter((section): section is NormalizedSectionDialogue => section !== null);
-      }
-
-      let dialogues: Dialogue[] = [];
-      let sections: ScriptSection[] = [];
-
-      if (normalizedSectionDialogues.length > 0) {
-        for (const section of normalizedSectionDialogues) {
-          dialogues = dialogues.concat(section.dialogues);
+          }
+        } catch (e) {
+          console.error(`Failed to parse section ${i + 1} response JSON array:`, e);
         }
 
-        sections = outline.sections.map((outlineSection) => {
-          const matchedSection =
-            normalizedSectionDialogues.find((section) => section.sectionId === outlineSection.id) ||
-            normalizedSectionDialogues.find((section) => section.title === outlineSection.title);
-
-          return {
-            id: outlineSection.id,
-            title: outlineSection.title,
-            dialogueIds: matchedSection ? matchedSection.dialogues.map((dialogue) => dialogue.id) : []
-          };
-        });
-      } else {
-        dialogues = this.parseDialogues(content);
-        if (dialogues.length === 0) {
-          throw new Error('Gemini 回應無法解析為完整逐字稿。');
+        let sectionDialogues = this.normalizeDialogues(parsedJson, idSeed + allDialogues.length);
+        if (sectionDialogues.length === 0) {
+          sectionDialogues = this.parseDialogues(content);
+        }
+        
+        if (sectionDialogues.length === 0) {
+          throw new Error(`Gemini 腳本解析失敗 (段落: ${section.title})。請重試或更換提供商。`);
         }
 
-        sections = outline.sections.map((section, index) => {
-          const start = Math.floor((index * dialogues.length) / outline.sections.length);
-          const end = Math.floor(((index + 1) * dialogues.length) / outline.sections.length);
-          return {
-            id: section.id,
-            title: section.title,
-            dialogueIds: dialogues.slice(start, end).map((dialogue) => dialogue.id)
-          };
+        const startIndex = allDialogues.length + 1;
+        sectionDialogues = sectionDialogues.map((d, idx) => ({ ...d, id: `dialogue_${idSeed}_${startIndex + idx}` }));
+        
+        allDialogues = allDialogues.concat(sectionDialogues);
+        
+        scriptSections.push({
+          id: section.id,
+          title: section.title,
+          dialogueIds: sectionDialogues.map((d) => d.id)
         });
+        
+        const lastDialogues = sectionDialogues.slice(-3);
+        previousContext = lastDialogues.map((d) => `${d.speaker === 'host' ? '主持人' : '專家'}: ${d.text}`).join('\n');
+        
+        if (i < outline.sections.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
       }
-
-      const totalDuration = this.estimateTotalDuration(dialogues, targetDurationSeconds);
 
       return {
         id: `script_${Date.now()}`,
-        title: safeString(parsed?.title, outline.title),
-        dialogues,
-        totalDuration,
-        sections
+        title: outline.title,
+        sections: scriptSections,
+        dialogues: allDialogues,
+        totalDuration: Math.max(600, outline.sections.reduce((sum, section) => sum + section.duration, 0))
       };
     } catch (error: unknown) {
-      console.error('生成播客腳本時發生錯誤:', error);
+      console.error('撰寫腳本發發生錯誤:', error);
       if (error instanceof Error) {
-        throw new Error(`生成播客腳本失敗: ${error.message}`);
-      } else {
-        throw new Error('生成播客腳本失敗: 發生未知錯誤');
+        throw new Error(`撰寫腳本失敗: ${error.message}`);
       }
+      throw new Error('撰寫腳本失敗: 發生未知錯誤');
     }
   }
 
@@ -663,7 +615,8 @@ ${outline.sections.map((section, index) => `${index + 1}. id=${section.id}, titl
     apiKey: string,
     section: OutlineSection,
     research: ResearchResult,
-    previousContext?: string
+    previousContext?: string,
+    options?: { signal?: AbortSignal }
   ): Promise<Dialogue[]> {
     try {
       const targetWordCount = Math.max(280, Math.round((section.duration / 60) * 150));
@@ -693,7 +646,7 @@ ${outline.sections.map((section, index) => `${index + 1}. id=${section.id}, titl
 ${previousContext ? `前文上下文：${previousContext}` : ''}
       `.trim();
 
-      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.7);
+      const content = await this.requestGeminiContent(apiKey, prompt, 4096, 0.7, options);
       const parsedArray = this.extractJsonArray(content);
       const normalized = this.normalizeDialogues(parsedArray, idSeed);
 
@@ -720,7 +673,7 @@ ${previousContext ? `前文上下文：${previousContext}` : ''}
   /**
    * 根據反饋優化腳本
    */
-  async refineScript(apiKey: string, script: Script, feedback: string): Promise<Script> {
+  async refineScript(apiKey: string, script: Script, feedback: string, options?: { signal?: AbortSignal }): Promise<Script> {
     try {
       const sectionContext = script.sections.map((section) => {
         const sectionDialogues = script.dialogues.filter((dialogue) => section.dialogueIds.includes(dialogue.id));
@@ -762,7 +715,7 @@ ${previousContext ? `前文上下文：${previousContext}` : ''}
 ${JSON.stringify(sectionContext)}
       `.trim();
 
-      const content = await this.requestGeminiContent(apiKey, prompt, 8192, 0.65);
+      const content = await this.requestGeminiContent(apiKey, prompt, 8192, 0.65, options);
       const parsed = this.extractJsonRecord(content);
       const idSeed = Date.now();
 

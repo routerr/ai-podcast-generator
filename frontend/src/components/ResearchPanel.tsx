@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { ResearchResult } from '../types';
 import { Sparkles } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   getMissingProviderKeys,
   getProviderDisplayName,
@@ -15,7 +17,6 @@ const ResearchPanel: React.FC = () => {
     apiKeys,
     config,
     topic,
-    isLoading,
     error,
     dispatch,
     podcastState
@@ -25,7 +26,18 @@ const ResearchPanel: React.FC = () => {
   const [researchTopic, setResearchTopic] = useState(topic || '');
   const [isResearching, setIsResearching] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const isLandingView = currentStep === 'input' && !podcastState.research;
+
+  const handleCancel = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsResearching(false);
+    setLocalError(null);
+    dispatch({ type: 'SET_LOADING', payload: false });
+  }, [dispatch]);
 
   const handleStartResearch = async () => {
     if (!researchTopic.trim()) {
@@ -49,8 +61,11 @@ const ResearchPanel: React.FC = () => {
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'SET_ERROR', payload: null });
 
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       const workflowService = new LlmWorkflowService({ apiKeys, config });
-      const { result }: { result: ResearchResult } = await workflowService.researchTopic(researchTopic);
+      const { result }: { result: ResearchResult } = await workflowService.researchTopic(researchTopic, { signal: abortController.signal });
 
       dispatch({
         type: 'UPDATE_PODCAST_STATE',
@@ -77,6 +92,10 @@ const ResearchPanel: React.FC = () => {
       dispatch({ type: 'SET_CURRENT_STEP', payload: 'research' });
       dispatch({ type: 'SET_LOADING', payload: false });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Research canceled by user');
+        return;
+      }
       const errorMessage = err instanceof Error ? err.message : t('research.error.unknown');
       setLocalError(errorMessage);
       dispatch({ type: 'SET_ERROR', payload: errorMessage });
@@ -163,10 +182,33 @@ ${podcastState.research.sources.map((source, i) => `${i + 1}. ${source.title} - 
         </div>
       )}
 
-      {isLoading && (
-        <div className="mb-6 flex flex-col items-center justify-center p-8 rounded-md espresso-card-soft">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#fab387] mb-4"></div>
-          <p className="espresso-muted">{t('research.loading')}</p>
+      {isResearching && (
+        <div 
+          className="fixed inset-0 espresso-overlay backdrop-blur-sm flex items-center justify-center z-50"
+          onClick={handleCancel}
+        >
+          <div 
+            className="espresso-card rounded-2xl p-8 max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center">
+              <svg className="animate-spin h-12 w-12 text-[#fab387] mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <h3 className="text-xl font-semibold text-white mb-2">{t('research.loading')}</h3>
+              <p className="espresso-muted text-center mb-6">
+                {t('script.modal.processingDescription')}
+              </p>
+              
+              <button
+                onClick={handleCancel}
+                className="px-6 py-2 rounded-lg font-medium transition-all espresso-btn-danger"
+              >
+                {t('script.cancel')}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -182,38 +224,19 @@ ${podcastState.research.sources.map((source, i) => `${i + 1}. ${source.title} - 
             </button>
           </div>
 
-          <div className="espresso-card rounded-lg p-6 mb-6">
-            <h4 className="text-lg font-medium mb-3">{t('research.summary')}</h4>
-            <p className="espresso-muted whitespace-pre-wrap">{podcastState.research.summary}</p>
-          </div>
-
-          <div className="espresso-card rounded-lg p-6 mb-6">
-            <h4 className="text-lg font-medium mb-3">{t('research.keyPoints')}</h4>
-            <ul className="list-disc pl-5 space-y-2">
-              {podcastState.research.keyPoints.map((point, index) => (
-                <li key={index} className="espresso-muted">{point}</li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="espresso-card rounded-lg p-6">
-            <h4 className="text-lg font-medium mb-3">{t('research.sources')}</h4>
-            <ul className="space-y-3">
-              {podcastState.research.sources.map((source, index) => (
-                <li key={index} className="border-b espresso-divider pb-3 last:border-0 last:pb-0">
-                  <h5 className="font-medium text-[#f5e0dc]">{source.title}</h5>
-                  <p className="text-sm espresso-muted mt-1">{source.snippet}</p>
-                  <a
-                    href={source.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[#fab387] hover:text-[#f8bd96] text-sm mt-1 inline-block"
-                  >
-                    {source.url}
-                  </a>
-                </li>
-              ))}
-            </ul>
+          <div className="espresso-card rounded-lg p-6 mb-6 prose prose-invert max-w-none prose-p:text-gray-300 prose-li:text-gray-300 prose-headings:text-[#f5e0dc] prose-a:text-[#fab387]">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {[
+                `### ${t('research.summary')}`,
+                podcastState.research.summary,
+                '',
+                `### ${t('research.keyPoints')}`,
+                ...podcastState.research.keyPoints.map((point) => `- ${point}`),
+                '',
+                `### ${t('research.sources')}`,
+                ...podcastState.research.sources.map((source) => `* **${source.title}**\n  ${source.snippet}\n  [${source.url}](${source.url})`)
+              ].join('\n')}
+            </ReactMarkdown>
           </div>
 
           <div className="mt-6">

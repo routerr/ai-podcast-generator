@@ -6,7 +6,7 @@ const translations = {
   en: {
     'header.title': 'AI Podcast Generator',
     'header.subtitle': 'Transform any topic into an engaging podcast',
-    'header.reset': 'Reset',
+    'header.reset': 'Restart',
     'header.apiSettingsAria': 'API key settings',
     'header.language': 'Language',
     'language.english': 'English',
@@ -162,7 +162,7 @@ const translations = {
   ja: {
     'header.title': 'AIポッドキャストジェネレーター',
     'header.subtitle': 'あらゆるトピックを魅力的なポッドキャストに変換',
-    'header.reset': 'リセット',
+    'header.reset': '最初から',
     'header.apiSettingsAria': 'APIキー設定',
     'header.language': '言語',
     'language.english': '英語',
@@ -318,7 +318,7 @@ const translations = {
   'zh-CN': {
     'header.title': 'AI 播客生成器',
     'header.subtitle': '将任何主题转化为引人入胜的播客',
-    'header.reset': '重置',
+    'header.reset': '重新开始',
     'header.apiSettingsAria': 'API 密钥设置',
     'header.language': '语言',
     'language.english': '英语',
@@ -474,7 +474,7 @@ const translations = {
   'zh-TW': {
     'header.title': 'AI 播客生成器',
     'header.subtitle': '將任何主題轉化為引人入勝的播客',
-    'header.reset': '重設',
+    'header.reset': '重新開始',
     'header.apiSettingsAria': 'API 金鑰設定',
     'header.language': '語言',
     'language.english': '英文',

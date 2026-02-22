@@ -52,7 +52,7 @@ const normalizeSessionConfig = (config: SessionConfig): SessionConfig => ({
     config.llmFallbackProvider === 'none' || isLlmProvider(config.llmFallbackProvider)
       ? config.llmFallbackProvider
       : 'perplexity',
-  openrouterModel: normalizePlainApiKey(config.openrouterModel || '') || 'meta-llama/llama-3.3-70b-instruct:free',
+  openrouterModel: normalizePlainApiKey(config.openrouterModel || '') || 'google/gemini-2.0-flash-lite-preview-02-05:free',
   ollamaModel: normalizePlainApiKey(config.ollamaModel || '') || 'llama3.1:8b',
   ollamaBaseUrl: normalizePlainApiKey(config.ollamaBaseUrl || '') || 'https://api.ollama.com'
 });

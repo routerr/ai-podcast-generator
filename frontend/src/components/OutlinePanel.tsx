@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { Outline, OutlineSection } from '../types';
@@ -13,7 +13,6 @@ const OutlinePanel: React.FC = () => {
     apiKeys,
     config,
     podcastState,
-    isLoading,
     error,
     dispatch
   } = useAppContext();
@@ -25,12 +24,40 @@ const OutlinePanel: React.FC = () => {
   const [localError, setLocalError] = useState<string | null>(null);
   const [editingSection, setEditingSection] = useState<string | null>(null);
   const [editedTitle, setEditedTitle] = useState('');
+  
+  // Track if we've already attempted an auto-generation on mount
+  const hasAttemptedGeneration = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleCancel = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsGenerating(false);
+    setIsRefining(false);
+    setLocalError(null);
+    dispatch({ type: 'SET_LOADING', payload: false });
+  }, [dispatch]);
 
   useEffect(() => {
     if (podcastState.outline) {
       setOutline(podcastState.outline);
     }
   }, [podcastState.outline]);
+
+  // Auto-trigger generation if navigating here with research but no outline
+  useEffect(() => {
+    if (
+      podcastState.research && 
+      !outline && 
+      !isGenerating && 
+      !hasAttemptedGeneration.current
+    ) {
+      hasAttemptedGeneration.current = true;
+      handleGenerateOutline();
+    }
+  }, [podcastState.research, outline, isGenerating]);
 
   const handleGenerateOutline = async () => {
     if (!podcastState.research) {
@@ -54,8 +81,11 @@ const OutlinePanel: React.FC = () => {
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'SET_ERROR', payload: null });
 
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       const workflowService = new LlmWorkflowService({ apiKeys, config });
-      const { result }: { result: Outline } = await workflowService.generateOutline(podcastState.research);
+      const { result }: { result: Outline } = await workflowService.generateOutline(podcastState.research, { signal: abortController.signal });
 
       setOutline(result);
       dispatch({
@@ -78,6 +108,10 @@ const OutlinePanel: React.FC = () => {
 
       dispatch({ type: 'SET_LOADING', payload: false });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Outline generation canceled by user');
+        return;
+      }
       const errorMessage = err instanceof Error ? err.message : t('outline.error.generateUnknown');
       setLocalError(errorMessage);
       dispatch({ type: 'SET_ERROR', payload: errorMessage });
@@ -109,13 +143,16 @@ const OutlinePanel: React.FC = () => {
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'SET_ERROR', payload: null });
 
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       const researchWithOutline = {
         ...podcastState.research!,
         summary: `${podcastState.research!.summary}\n\n${t('outline.currentOutline')}:\n${outline.title}\n${outline.description}\n${outline.sections.map((s) => `- ${s.title}`).join('\n')}`
       };
 
       const workflowService = new LlmWorkflowService({ apiKeys, config });
-      const { result }: { result: Outline } = await workflowService.generateOutline(researchWithOutline);
+      const { result }: { result: Outline } = await workflowService.generateOutline(researchWithOutline, { signal: abortController.signal });
 
       setOutline(result);
       dispatch({
@@ -138,6 +175,10 @@ const OutlinePanel: React.FC = () => {
 
       dispatch({ type: 'SET_LOADING', payload: false });
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('Outline refinement canceled by user');
+        return;
+      }
       const errorMessage = err instanceof Error ? err.message : t('outline.error.refineUnknown');
       setLocalError(errorMessage);
       dispatch({ type: 'SET_ERROR', payload: errorMessage });
@@ -354,12 +395,35 @@ const OutlinePanel: React.FC = () => {
         </div>
       )}
 
-      {isLoading && (
-        <div className="mb-6 flex flex-col items-center justify-center p-8 rounded-md espresso-card-soft">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#fab387] mb-4"></div>
-          <p className="espresso-muted">
-            {isRefining ? t('outline.loadingRefining') : t('outline.loadingGenerating')}
-          </p>
+      {(isGenerating || isRefining) && (
+        <div 
+          className="fixed inset-0 espresso-overlay backdrop-blur-sm flex items-center justify-center z-50"
+          onClick={handleCancel}
+        >
+          <div 
+            className="espresso-card rounded-2xl p-8 max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center">
+              <svg className="animate-spin h-12 w-12 text-[#fab387] mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <h3 className="text-xl font-semibold text-white mb-2">
+                {isRefining ? t('outline.loadingRefining') : t('outline.loadingGenerating')}
+              </h3>
+              <p className="espresso-muted text-center mb-6">
+                {t('script.modal.processingDescription')}
+              </p>
+              
+              <button
+                onClick={handleCancel}
+                className="px-6 py-2 rounded-lg font-medium transition-all espresso-btn-danger"
+              >
+                {t('script.cancel')}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

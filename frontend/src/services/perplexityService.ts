@@ -81,13 +81,6 @@ const safeSectionArray = (value: unknown): OutlineSection[] => {
     .filter((item): item is OutlineSection => item !== null);
 };
 
-const countWords = (text: string): number => {
-  const latinWords = text.trim().split(/\s+/).filter(Boolean).length;
-  const cjkChars = (text.match(/[\u3040-\u30ff\u3400-\u9fff]/g) || []).length;
-  const cjkWordEstimate = Math.ceil(cjkChars / 2);
-  return Math.max(latinWords, cjkWordEstimate, 1);
-};
-
 const normalizeSpeaker = (value: unknown): 'host' | 'expert' | null => {
   if (typeof value !== 'string') {
     return null;
@@ -347,18 +340,10 @@ export class PerplexityService {
         pauseAfter
       });
     }
-
     return dialogues;
   }
 
-  private estimateTotalDuration(dialogues: Dialogue[], fallbackSeconds: number): number {
-    const wordCount = dialogues.reduce((sum, dialogue) => sum + countWords(dialogue.text), 0);
-    const estimatedByWords = Math.round((wordCount / 150) * 60);
-    const pauseSeconds = Math.round(dialogues.reduce((sum, dialogue) => sum + (dialogue.pauseAfter || 0), 0) / 1000);
-    return Math.max(fallbackSeconds, estimatedByWords + pauseSeconds, 60);
-  }
-
-  private async requestChatCompletions(payload: Record<string, unknown>): Promise<Response> {
+  private async requestChatCompletions(payload: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<Response> {
     if (!this.apiKey || this.apiKey.length <= 10 || this.apiKey.length > MAX_PERPLEXITY_API_KEY_LENGTH) {
       throw new Error('Perplexity API 金鑰格式無效，請重新貼上有效金鑰。');
     }
@@ -376,19 +361,24 @@ export class PerplexityService {
           body: JSON.stringify({
             apiKey: this.apiKey,
             payload
-          })
+          }),
+          signal: options?.signal
         });
 
-        if (proxyResponse.status === 404 || proxyResponse.status === 405) {
+        const isFromProxy = proxyResponse.headers.get('x-proxy-handled') === '1';
+        if (!isFromProxy && (proxyResponse.status === 404 || proxyResponse.status === 405)) {
           unavailableCount += 1;
           continue;
         }
 
         return proxyResponse;
-      } catch (proxyError) {
+      } catch (error) {
+        if (options?.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          throw error;
+        }
         unavailableCount += 1;
         if (!this.isLocalhostEnvironment()) {
-          console.warn(`Perplexity proxy ${endpoint} request failed:`, proxyError);
+          console.warn(`Perplexity proxy ${endpoint} request failed:`, error);
         }
       }
     }
@@ -402,7 +392,7 @@ export class PerplexityService {
     throw new Error('Perplexity request failed via proxy.');
   }
 
-  private async requestSearch(query: string): Promise<Response> {
+  private async requestSearch(query: string, options?: { signal?: AbortSignal }): Promise<Response> {
     if (!this.apiKey || this.apiKey.length <= 10 || this.apiKey.length > MAX_PERPLEXITY_API_KEY_LENGTH) {
       throw new Error('Perplexity API 金鑰格式無效，請重新貼上有效金鑰。');
     }
@@ -427,19 +417,24 @@ export class PerplexityService {
             query: normalizedQuery,
             max_results: 10,
             max_tokens_per_page: 2048
-          })
+          }),
+          signal: options?.signal
         });
 
-        if (proxyResponse.status === 404 || proxyResponse.status === 405) {
+        const isFromProxy = proxyResponse.headers.get('x-proxy-handled') === '1';
+        if (!isFromProxy && (proxyResponse.status === 404 || proxyResponse.status === 405)) {
           unavailableCount += 1;
           continue;
         }
 
         return proxyResponse;
-      } catch (proxyError) {
+      } catch (error) {
+        if (options?.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          throw error;
+        }
         unavailableCount += 1;
         if (!this.isLocalhostEnvironment()) {
-          console.warn(`Perplexity search proxy ${endpoint} request failed:`, proxyError);
+          console.warn(`Perplexity search proxy ${endpoint} request failed:`, error);
         }
       }
     }
@@ -458,7 +453,7 @@ export class PerplexityService {
    * @param topic 主題
    * @returns 研究結果
    */
-  async researchTopic(topic: string): Promise<ResearchResult> {
+  async researchTopic(topic: string, options?: { signal?: AbortSignal }): Promise<ResearchResult> {
     try {
       const payload = {
         model: LARGE_ONLINE_MODEL,
@@ -480,7 +475,7 @@ export class PerplexityService {
         return_citations: true
       };
 
-      const response = await this.requestChatCompletions(payload);
+      const response = await this.requestChatCompletions(payload, options);
       if (response.ok) {
         const data = await response.json();
         const content = safeString(data?.choices?.[0]?.message?.content);
@@ -521,7 +516,8 @@ export class PerplexityService {
       const chatErrorText = await response.text().catch(() => '');
       if (this.isAuthFailure(response.status, chatErrorText)) {
         const searchResponse = await this.requestSearch(
-          `請針對以下主題提供最新、可查證的研究資訊並附來源：${topic}`
+          `請針對以下主題提供最新、可查證的研究資訊並附來源：${topic}`,
+          options
         );
 
         if (!searchResponse.ok) {
@@ -552,7 +548,7 @@ export class PerplexityService {
    * @param research 研究結果
    * @returns 大綱結構
    */
-  async generateOutline(research: ResearchResult): Promise<Outline> {
+  async generateOutline(research: ResearchResult, options?: { signal?: AbortSignal }): Promise<Outline> {
     try {
       const payload = {
         model: LARGE_ONLINE_MODEL,
@@ -575,7 +571,7 @@ export class PerplexityService {
         max_tokens: 3000
       };
 
-      const response = await this.requestChatCompletions(payload);
+      const response = await this.requestChatCompletions(payload, options);
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
@@ -616,7 +612,7 @@ export class PerplexityService {
    * @param research 研究結果
    * @returns 詳細內容
    */
-  async generateSectionContent(section: OutlineSection, research: ResearchResult): Promise<string> {
+  async generateSectionContent(section: OutlineSection, research: ResearchResult, options?: { signal?: AbortSignal }): Promise<string> {
     try {
       const payload = {
         model: LARGE_ONLINE_MODEL,
@@ -637,7 +633,7 @@ export class PerplexityService {
         max_tokens: 2500
       };
 
-      const response = await this.requestChatCompletions(payload);
+      const response = await this.requestChatCompletions(payload, options);
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
@@ -659,118 +655,109 @@ export class PerplexityService {
   /**
    * 在 Gemini 配額耗盡時，使用 Perplexity 生成完整播客腳本（fallback）
    */
-  async generatePodcastScript(outline: Outline, research: ResearchResult): Promise<Script> {
+  async generatePodcastScript(
+    outline: Outline,
+    research: ResearchResult,
+    options?: { signal?: AbortSignal; onProgress?: (text: string) => void }
+  ): Promise<Script> {
     try {
-      const totalOutlineDuration = outline.sections.reduce(
-        (sum, section) => sum + (Number.isFinite(section.duration) && section.duration > 0 ? section.duration : 180),
-        0
-      );
-      const targetDurationSeconds = totalOutlineDuration > 0 ? totalOutlineDuration : 1200;
-      const targetWordCount = Math.max(1200, Math.round((targetDurationSeconds / 60) * 140));
-
-      const payload = {
-        model: LARGE_ONLINE_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content:
-              '你是一位專業播客編劇。請輸出 JSON 物件，包含 title 與 sections。' +
-              'sections 必須是陣列，每個元素包含 id、title、dialogues。' +
-              'dialogues 每項包含 speaker(host/expert)、text、pauseAfter(可選)。' +
-              '請輸出完整逐字稿，不可摘要化，不要輸出 JSON 以外內容。'
-          },
-          {
-            role: 'user',
-            content:
-              `目標字數約 ${targetWordCount}，目標長度 ${targetDurationSeconds} 秒。\n` +
-              `播客標題：${outline.title}\n` +
-              `播客描述：${outline.description}\n` +
-              `研究摘要：${research.summary}\n` +
-              `研究關鍵要點：${research.keyPoints.join('；')}\n` +
-              `大綱段落：\n${outline.sections.map((section, index) => `${index + 1}. id=${section.id}, title=${section.title}, keyPoints=${section.keyPoints.join('、')}, duration=${section.duration}s`).join('\n')}`
-          }
-        ],
-        max_tokens: 4000
-      };
-
-      const response = await this.requestChatCompletions(payload);
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        throw new Error(this.formatApiError(response, errorText));
-      }
-
-      const data = await response.json();
-      const content = safeString(data?.choices?.[0]?.message?.content);
-      const parsed = this.extractJsonRecord(content);
       const idSeed = Date.now();
+      let allDialogues: Dialogue[] = [];
+      const scriptSections: ScriptSection[] = [];
 
-      let dialogues: Dialogue[] = [];
-      let sections: ScriptSection[] = [];
+      let previousContext = '';
 
-      if (parsed && Array.isArray(parsed.sections)) {
-        const parsedSections = parsed.sections
-          .map((section): { sectionId: string; title: string; dialogues: Dialogue[] } | null => {
-            if (!section || typeof section !== 'object') {
-              return null;
-            }
-            const sectionObject = section as JsonRecord;
-            const sectionId = safeString(sectionObject.id);
-            const title = safeString(sectionObject.title);
-            const sectionDialogues = this.normalizeDialogues(sectionObject.dialogues, idSeed + dialogues.length);
-            if (!sectionId || sectionDialogues.length === 0) {
-              return null;
-            }
-            return {
-              sectionId,
-              title: title || sectionId,
-              dialogues: sectionDialogues
-            };
-          })
-          .filter((section): section is { sectionId: string; title: string; dialogues: Dialogue[] } => section !== null);
+      for (let i = 0; i < outline.sections.length; i++) {
+        const section = outline.sections[i];
 
-        if (parsedSections.length > 0) {
-          for (const section of parsedSections) {
-            dialogues = dialogues.concat(section.dialogues);
-          }
-
-          sections = outline.sections.map((outlineSection) => {
-            const matched = parsedSections.find((section) => section.sectionId === outlineSection.id) ||
-              parsedSections.find((section) => section.title === outlineSection.title);
-            return {
-              id: outlineSection.id,
-              title: outlineSection.title,
-              dialogueIds: matched ? matched.dialogues.map((dialogue) => dialogue.id) : []
-            };
-          });
+        if (options?.onProgress) {
+          options.onProgress(`正在撰寫段落 ${i + 1}/${outline.sections.length}: ${section.title}`);
         }
-      }
 
-      if (dialogues.length === 0) {
-        dialogues = this.parseDialogues(content);
-      }
+        const payload = {
+          model: LARGE_ONLINE_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content:
+                '你是一位專業播客編劇。請嚴格輸出 JSON 陣列，包含該段落的對話。不要有 JSON 以外的文字。' +
+                '陣列中每個元素必須包含 speaker(host/expert)、text、pauseAfter(可選)。' +
+                '請輸出完整逐字稿，不可摘要化。'
+            },
+            {
+              role: 'user',
+              content:
+                `播客標題：${outline.title}\n` +
+                `研究摘要：${research.summary}\n` +
+                `目前段落：${section.title}\n` +
+                `本段重點：${section.keyPoints.join('；')}\n` +
+                `預計長度：${section.duration} 秒\n` +
+                (previousContext ? `前一段結尾：\n${previousContext}\n\n請順暢接續上一段。` : '')
+            }
+          ],
+          max_tokens: 4000
+        };
 
-      if (dialogues.length === 0) {
-        throw new Error('Perplexity fallback 腳本解析失敗。');
-      }
+        const response = await this.requestChatCompletions(payload, options);
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => '');
+          throw new Error(this.formatApiError(response, errorText));
+        }
 
-      if (sections.length === 0) {
-        sections = outline.sections.map((section, index) => {
-          const start = Math.floor((index * dialogues.length) / outline.sections.length);
-          const end = Math.floor(((index + 1) * dialogues.length) / outline.sections.length);
-          return {
-            id: section.id,
-            title: section.title,
-            dialogueIds: dialogues.slice(start, end).map((dialogue) => dialogue.id)
-          };
+        const data = await response.json();
+        const content = safeString(data?.choices?.[0]?.message?.content);
+        
+        let parsedJson: JsonRecord | JsonRecord[] | null = null;
+        try {
+          const candidate = content.match(/```(?:json)?\s*(\[[\s\S]*\])\s*```/i)?.[1] || content;
+          const firstBracket = candidate.indexOf('[');
+          const lastBracket = candidate.lastIndexOf(']');
+          if (firstBracket !== -1 && lastBracket >= firstBracket) {
+            parsedJson = JSON.parse(candidate.slice(firstBracket, lastBracket + 1));
+          } else {
+            const record = this.extractJsonRecord(content);
+            if (record && Array.isArray(record.dialogues)) {
+               parsedJson = record.dialogues;
+            }
+          }
+        } catch (e) {
+          console.error(`Failed to parse section ${i + 1} response JSON array:`, e);
+        }
+
+        let sectionDialogues = this.normalizeDialogues(parsedJson, idSeed + allDialogues.length);
+        if (sectionDialogues.length === 0) {
+          sectionDialogues = this.parseDialogues(content);
+        }
+        
+        if (sectionDialogues.length === 0) {
+          throw new Error(`Perplexity 腳本解析失敗 (段落: ${section.title})。請重試或更換提供商。`);
+        }
+
+        const startIndex = allDialogues.length + 1;
+        sectionDialogues = sectionDialogues.map((d, idx) => ({ ...d, id: `dialogue_${idSeed}_${startIndex + idx}` }));
+        
+        allDialogues = allDialogues.concat(sectionDialogues);
+        
+        scriptSections.push({
+          id: section.id,
+          title: section.title,
+          dialogueIds: sectionDialogues.map((d) => d.id)
         });
+        
+        const lastDialogues = sectionDialogues.slice(-3);
+        previousContext = lastDialogues.map((d) => `${d.speaker === 'host' ? '主持人' : '專家'}: ${d.text}`).join('\n');
+        
+        if (i < outline.sections.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
       }
 
       return {
         id: `script_${Date.now()}`,
-        title: safeString(parsed?.title, outline.title),
-        dialogues,
-        sections,
-        totalDuration: this.estimateTotalDuration(dialogues, targetDurationSeconds)
+        title: outline.title,
+        sections: scriptSections,
+        dialogues: allDialogues,
+        totalDuration: Math.max(600, outline.sections.reduce((sum, section) => sum + section.duration, 0))
       };
     } catch (error: unknown) {
       console.error('使用 Perplexity 生成腳本時發生錯誤:', error);
