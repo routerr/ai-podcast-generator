@@ -110,12 +110,14 @@ const AudioPanel: React.FC = () => {
           throw new DOMException('Aborted', 'AbortError');
         }
         sequenceBlobs.push(audioBlobs[i]);
-        // Note: We intentionally skip adding WAV PCM pauses here to allow
-        // clean byte-by-byte concatenation of the native OpenAI MP3 blobs.
+        const pauseAfter = podcastState.script.dialogues[i].pauseAfter;
+        if (pauseAfter && pauseAfter > 0) {
+          sequenceBlobs.push(await audioService.addPause(pauseAfter));
+        }
       }
 
-      // Concatenate the MP3 chunks directly into a single valid MP3 file
-      const mergedAudioBlob = new Blob(sequenceBlobs, { type: 'audio/mpeg' });
+      // Encode the fully assembled sequence natively into a seamless MP3 using lamejs
+      const mergedAudioBlob = await audioService.mergeAudioBlobs(sequenceBlobs);
       const duration = await audioService.getAudioDuration(mergedAudioBlob);
       const audioUrl = URL.createObjectURL(mergedAudioBlob);
 

@@ -1,3 +1,6 @@
+// @ts-ignore
+import * as lamejs from 'lamejs';
+
 /**
  * 音訊處理服務類別
  */
@@ -9,9 +12,9 @@ export class AudioService {
   }
 
   /**
-   * 合併多個音訊 Blob 成一個
+   * 合併多個音訊 Blob 成一個真正的 MP3
    * @param audioBlobs 音訊 Blob 陣列
-   * @returns 合併後的音訊 Blob
+   * @returns MP3 格式的音訊 Blob
    */
   async mergeAudioBlobs(audioBlobs: Blob[]): Promise<Blob> {
     try {
@@ -39,23 +42,78 @@ export class AudioService {
         let offset = 0;
         
         for (const buffer of audioBuffers) {
-          const channelData = buffer.getChannelData(channel);
+          // Fallback to mono if a buffer has fewer channels than the target mix
+          const sourceChannel = channel < buffer.numberOfChannels ? channel : 0;
+          const channelData = buffer.getChannelData(sourceChannel);
           mergedChannelData.set(channelData, offset);
           offset += channelData.length;
         }
       }
 
-      // 轉換為 WAV 格式的 Blob
-      return this.audioBufferToWavBlob(mergedBuffer);
+      // Convert the perfectly mixed PCM AudioBuffer out to a real MP3 file
+      return this.audioBufferToMp3Blob(mergedBuffer);
     } catch (error) {
       throw new Error(`Failed to merge audio blobs: ${error}`);
     }
   }
 
   /**
+   * 將 AudioBuffer 轉換為 MP3 格式的 Blob
+   * @param audioBuffer AudioBuffer 物件
+   * @returns MP3 格式的 Blob
+   */
+  private audioBufferToMp3Blob(audioBuffer: AudioBuffer): Blob {
+    const channels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const kbps = 128; // 標準語音品質
+    
+    // 初始化 LAME 編碼器
+    // @ts-ignore
+    const encoder = new lamejs.Mp3Encoder(channels, sampleRate, kbps);
+    const mp3Data: Int8Array[] = [];
+    
+    const leftRaw = audioBuffer.getChannelData(0);
+    const rightRaw = channels > 1 ? audioBuffer.getChannelData(1) : leftRaw;
+    
+    const sampleBlockSize = 1152; // LAME 的固定處理塊
+    const left16 = new Int16Array(leftRaw.length);
+    const right16 = new Int16Array(rightRaw.length);
+    
+    // Float32 轉 Int16
+    for (let i = 0; i < leftRaw.length; i++) {
+        left16[i] = leftRaw[i] < 0 ? leftRaw[i] * 32768 : leftRaw[i] * 32767;
+        right16[i] = rightRaw[i] < 0 ? rightRaw[i] * 32768 : rightRaw[i] * 32767;
+    }
+    
+    for (let i = 0; i < left16.length; i += sampleBlockSize) {
+        const leftChunk = left16.subarray(i, i + sampleBlockSize);
+        const rightChunk = right16.subarray(i, i + sampleBlockSize);
+        
+        let mp3buf;
+        if (channels === 2) {
+            mp3buf = encoder.encodeBuffer(leftChunk, rightChunk);
+        } else {
+            mp3buf = encoder.encodeBuffer(leftChunk);
+        }
+        
+        if (mp3buf.length > 0) {
+            mp3Data.push(new Int8Array(mp3buf));
+        }
+    }
+    
+    const mp3Last = encoder.flush();
+    if (mp3Last.length > 0) {
+        mp3Data.push(new Int8Array(mp3Last));
+    }
+    
+    // Cast to any to bypass strict TS DOM typings for ArrayBufferLike
+    return new Blob(mp3Data as any, { type: 'audio/mpeg' });
+  }
+
+  /**
    * 添加暫停音訊
    * @param duration 暫停時間（毫秒）
-   * @returns 暫停音訊的 Blob
+   * @returns 暫停音訊的 Blob (WAV)
    */
   async addPause(duration: number): Promise<Blob> {
     try {
