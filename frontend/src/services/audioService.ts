@@ -1,51 +1,42 @@
 /**
- * 音訊處理服務類別
+ * Audio processing service
  */
 export class AudioService {
   private audioContext: AudioContext;
 
   constructor() {
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
   }
 
   /**
-   * 合併多個音訊 Blob 成一個
-   * @param audioBlobs 音訊 Blob 陣列
-   * @returns 合併後的音訊 Blob
+   * Merge multiple audio Blobs into a single Blob by concatenating their decoded PCM data.
    */
   async mergeAudioBlobs(audioBlobs: Blob[]): Promise<Blob> {
+    if (audioBlobs.length === 0) {
+      throw new Error('No audio blobs to merge.');
+    }
+
     try {
-      // 將所有 Blob 转換為 ArrayBuffer
-      const arrayBuffers = await Promise.all(
-        audioBlobs.map(blob => blob.arrayBuffer())
-      );
-
-      // 解碼所有音訊資料
+      const arrayBuffers = await Promise.all(audioBlobs.map(b => b.arrayBuffer()));
       const audioBuffers = await Promise.all(
-        arrayBuffers.map(buffer => this.audioContext.decodeAudioData(buffer))
+        arrayBuffers.map(ab => this.audioContext.decodeAudioData(ab))
       );
 
-      // 計算總長度
-      const totalLength = audioBuffers.reduce((sum, buffer) => sum + buffer.length, 0);
-      
-      // 創建新的音訊緩衝區
       const sampleRate = audioBuffers[0].sampleRate;
       const numberOfChannels = audioBuffers[0].numberOfChannels;
+      const totalLength = audioBuffers.reduce((sum, buf) => sum + buf.length, 0);
+
       const mergedBuffer = this.audioContext.createBuffer(numberOfChannels, totalLength, sampleRate);
 
-      // 合併所有音訊資料
       for (let channel = 0; channel < numberOfChannels; channel++) {
-        const mergedChannelData = mergedBuffer.getChannelData(channel);
+        const mergedData = mergedBuffer.getChannelData(channel);
         let offset = 0;
-        
-        for (const buffer of audioBuffers) {
-          const channelData = buffer.getChannelData(channel);
-          mergedChannelData.set(channelData, offset);
-          offset += channelData.length;
+        for (const buf of audioBuffers) {
+          mergedData.set(buf.getChannelData(channel), offset);
+          offset += buf.length;
         }
       }
 
-      // 轉換為 WAV 格式的 Blob
       return this.audioBufferToWavBlob(mergedBuffer);
     } catch (error) {
       throw new Error(`Failed to merge audio blobs: ${error}`);
@@ -53,24 +44,14 @@ export class AudioService {
   }
 
   /**
-   * 添加暫停音訊
-   * @param duration 暫停時間（毫秒）
-   * @returns 暫停音訊的 Blob
+   * Create a silent audio Blob of the given duration (milliseconds).
    */
   async addPause(duration: number): Promise<Blob> {
     try {
-      // 創建靜音音訊緩衝區
       const sampleRate = this.audioContext.sampleRate;
-      const numSamples = (duration / 1000) * sampleRate;
+      const numSamples = Math.ceil((duration / 1000) * sampleRate);
       const buffer = this.audioContext.createBuffer(1, numSamples, sampleRate);
-      
-      // 填充靜音數據（全為 0）
-      const channelData = buffer.getChannelData(0);
-      for (let i = 0; i < numSamples; i++) {
-        channelData[i] = 0;
-      }
-      
-      // 轉換為 WAV 格式的 Blob
+      // Channel data is already zeroed by default
       return this.audioBufferToWavBlob(buffer);
     } catch (error) {
       throw new Error(`Failed to create pause audio: ${error}`);
@@ -78,23 +59,7 @@ export class AudioService {
   }
 
   /**
-   * 將音訊轉換為 MP3 格式
-   * 注意：瀏覽器原生不支援直接轉換為 MP3，這裡返回原始音訊
-   * 實際應用中可能需要使用第三方庫如 lamejs
-   * @param audioBlob 音訊 Blob
-   * @returns MP3 格式的音訊 Blob
-   */
-  async convertToMp3(audioBlob: Blob): Promise<Blob> {
-    // 為了簡化實現，這裡直接返回原始音訊
-    // 實際應用中可以使用第三方庫進行轉換
-    console.warn('MP3 conversion not implemented, returning original audio');
-    return audioBlob;
-  }
-
-  /**
-   * 獲取音訊持續時間
-   * @param audioBlob 音訊 Blob
-   * @returns 音訊持續時間（秒）
+   * Get the duration (in seconds) of an audio Blob.
    */
   async getAudioDuration(audioBlob: Blob): Promise<number> {
     try {
@@ -107,91 +72,76 @@ export class AudioService {
   }
 
   /**
-   * 創建下載連結
-   * @param audioBlob 音訊 Blob
-   * @param filename 檔案名稱
-   * @returns 下載連結
+   * Trigger a browser download for the given audio Blob.
    */
-  createDownloadLink(audioBlob: Blob, filename: string): string {
+  createDownloadLink(audioBlob: Blob, filename: string): void {
     const url = URL.createObjectURL(audioBlob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
+    a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    return url;
+    // Revoke after a short delay so the browser can initiate the download
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
   /**
-   * 將 AudioBuffer 轉換為 WAV 格式的 Blob
-   * @param audioBuffer AudioBuffer 物件
-   * @returns WAV 格式的 Blob
+   * Encode an AudioBuffer as a WAV Blob.
+   * Samples are properly interleaved for multi-channel audio.
    */
   private audioBufferToWavBlob(audioBuffer: AudioBuffer): Blob {
-    const length = audioBuffer.length;
-    const numberOfChannels = audioBuffer.numberOfChannels;
+    const numChannels = audioBuffer.numberOfChannels;
     const sampleRate = audioBuffer.sampleRate;
-    
-    // WAV 檔頭大小為 44 bytes
-    const buffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+    const numFrames = audioBuffer.length;
+    const bytesPerSample = 2; // 16-bit PCM
+    const blockAlign = numChannels * bytesPerSample;
+    const dataBytes = numFrames * blockAlign;
+
+    // WAV header is 44 bytes
+    const buffer = new ArrayBuffer(44 + dataBytes);
     const view = new DataView(buffer);
-    
-    // RIFF 標識
+
+    // RIFF chunk descriptor
     this.writeString(view, 0, 'RIFF');
-    view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+    view.setUint32(4, 36 + dataBytes, true);
     this.writeString(view, 8, 'WAVE');
-    
-    // fmt 子塊
+
+    // fmt sub-chunk
     this.writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true); // 子塊大小
-    view.setUint16(20, 1, true); // 音訊格式 (1 = PCM)
-    view.setUint16(22, numberOfChannels, true); // 頻道數
-    view.setUint32(24, sampleRate, true); // 採樣率
-    view.setUint32(28, sampleRate * numberOfChannels * 2, true); // 位元組率
-    view.setUint16(32, numberOfChannels * 2, true); // 區塊對齊
-    view.setUint16(34, 16, true); // 位元深度
-    
-    // data 子塊
+    view.setUint32(16, 16, true);          // sub-chunk size
+    view.setUint16(20, 1, true);           // PCM format
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);          // bits per sample
+
+    // data sub-chunk
     this.writeString(view, 36, 'data');
-    view.setUint32(40, length * numberOfChannels * 2, true);
-    
-    // 寫入音訊資料
-    this.floatTo16BitPCM(view, 44, audioBuffer);
-    
+    view.setUint32(40, dataBytes, true);
+
+    // Interleave channel data: frame0-ch0, frame0-ch1, frame1-ch0, frame1-ch1, …
+    const channelData = Array.from({ length: numChannels }, (_, c) =>
+      audioBuffer.getChannelData(c)
+    );
+    let offset = 44;
+    for (let frame = 0; frame < numFrames; frame++) {
+      for (let ch = 0; ch < numChannels; ch++) {
+        const sample = Math.max(-1, Math.min(1, channelData[ch][frame]));
+        const pcm = sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff);
+        view.setInt16(offset, pcm, true);
+        offset += 2;
+      }
+    }
+
     return new Blob([view], { type: 'audio/wav' });
   }
 
-  /**
-   * 寫入字串到 DataView
-   * @param view DataView 物件
-   * @param offset 偏移量
-   * @param string 字串
-   */
-  private writeString(view: DataView, offset: number, string: string): void {
-    for (let i = 0; i < string.length; i++) {
-      view.setUint8(offset + i, string.charCodeAt(i));
-    }
-  }
-
-  /**
-   * 將浮點數轉換為 16 位 PCM
-   * @param view DataView 物件
-   * @param offset 偏移量
-   * @param audioBuffer AudioBuffer 物件
-   */
-  private floatTo16BitPCM(view: DataView, offset: number, audioBuffer: AudioBuffer): void {
-    const length = audioBuffer.length;
-    const numberOfChannels = audioBuffer.numberOfChannels;
-    
-    for (let channel = 0; channel < numberOfChannels; channel++) {
-      const channelData = audioBuffer.getChannelData(channel);
-      for (let i = 0; i < length; i++) {
-        const sample = Math.max(-1, Math.min(1, channelData[i]));
-        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-        offset += 2;
-      }
+  private writeString(view: DataView, offset: number, str: string): void {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
     }
   }
 }

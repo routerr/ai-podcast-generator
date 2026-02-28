@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Eye, EyeOff, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { useApiKeys } from '../hooks/useApiKeys';
+import { useAppContext } from '../contexts/AppContext';
 import './ApiKeyPanel.css';
 
 interface ApiKeyPanelProps {
@@ -10,6 +11,12 @@ interface ApiKeyPanelProps {
 
 export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => {
   const { apiKeys, keyStatus, savePerplexityKey, saveGeminiKey, saveOpenaiKey, clearAllKeys } = useApiKeys();
+  const { dispatch: appDispatch, apiKeys: contextKeys } = useAppContext();
+
+  // Sync AppContext API keys whenever local hook keys change
+  const syncToContext = (perplexity: string, gemini: string, openai: string) => {
+    appDispatch({ type: 'SET_API_KEYS', payload: { perplexityKey: perplexity, geminiKey: gemini, openaiKey: openai } });
+  };
   const [perplexityKey, setPerplexityKey] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
   const [openaiKey, setOpenaiKey] = useState(''); // 新增 OpenAI API 金鑰狀態
@@ -30,6 +37,7 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
   const handleSavePerplexityKey = () => {
     if (perplexityKey.trim()) {
       savePerplexityKey(perplexityKey.trim());
+      syncToContext(perplexityKey.trim(), contextKeys.geminiKey, contextKeys.openaiKey || '');
     }
   };
 
@@ -37,6 +45,7 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
   const handleSaveGeminiKey = () => {
     if (geminiKey.trim()) {
       saveGeminiKey(geminiKey.trim());
+      syncToContext(contextKeys.perplexityKey, geminiKey.trim(), contextKeys.openaiKey || '');
     }
   };
 
@@ -44,6 +53,7 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
   const handleSaveOpenaiKey = () => {
     if (openaiKey.trim()) {
       saveOpenaiKey(openaiKey.trim());
+      syncToContext(contextKeys.perplexityKey, contextKeys.geminiKey, openaiKey.trim());
     }
   };
 
@@ -52,7 +62,8 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose }) => 
     clearAllKeys();
     setPerplexityKey('');
     setGeminiKey('');
-    setOpenaiKey(''); // 清除 OpenAI 金鑰
+    setOpenaiKey('');
+    syncToContext('', '', '');
   };
 
   // 渲染金鑰狀態指示器

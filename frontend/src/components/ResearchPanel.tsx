@@ -4,27 +4,27 @@ import { PerplexityService } from '../services/perplexityService';
 import { ResearchResult } from '../types';
 
 const ResearchPanel: React.FC = () => {
-  const { 
-    apiKeys, 
-    topic, 
-    isLoading, 
-    error, 
+  const {
+    apiKeys,
+    topic,
+    isLoading,
+    error,
     dispatch,
-    podcastState
+    podcastState,
+    config,
   } = useAppContext();
-  
+
   const [researchTopic, setResearchTopic] = useState(topic || '');
   const [isResearching, setIsResearching] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const handleStartResearch = async () => {
     if (!researchTopic.trim()) {
-      setLocalError('請輸入研究主題');
+      setLocalError('Please enter a topic to research.');
       return;
     }
-
     if (!apiKeys.perplexityKey) {
-      setLocalError('請先設定 Perplexity API 金鑰');
+      setLocalError('Please set your Perplexity API key first (click the settings icon).');
       return;
     }
 
@@ -35,22 +35,18 @@ const ResearchPanel: React.FC = () => {
       dispatch({ type: 'SET_ERROR', payload: null });
 
       const perplexityService = new PerplexityService(apiKeys.perplexityKey);
-      const result: ResearchResult = await perplexityService.researchTopic(researchTopic);
-      
-      dispatch({ 
-        type: 'UPDATE_PODCAST_STATE', 
-        payload: { 
-          research: result,
-          topic: researchTopic
-        } 
+      const result: ResearchResult = await perplexityService.researchTopic(researchTopic, config.language);
+
+      dispatch({
+        type: 'UPDATE_PODCAST_STATE',
+        payload: { research: result, topic: researchTopic },
       });
-      
       dispatch({ type: 'SET_TOPIC', payload: researchTopic });
       dispatch({ type: 'SET_LOADING', payload: false });
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : '研究過程中發生未知錯誤';
-      setLocalError(errorMessage);
-      dispatch({ type: 'SET_ERROR', payload: errorMessage });
+      const msg = err instanceof Error ? err.message : 'An unknown error occurred during research.';
+      setLocalError(msg);
+      dispatch({ type: 'SET_ERROR', payload: msg });
       dispatch({ type: 'SET_LOADING', payload: false });
     } finally {
       setIsResearching(false);
@@ -58,121 +54,219 @@ const ResearchPanel: React.FC = () => {
   };
 
   const handleCopyResults = () => {
-    if (podcastState.research) {
-      const textToCopy = `
-主題: ${podcastState.research.topic}
-
-摘要:
-${podcastState.research.summary}
-
-關鍵要點:
-${podcastState.research.keyPoints.map((point, i) => `${i + 1}. ${point}`).join('\n')}
-
-來源:
-${podcastState.research.sources.map((source, i) => `${i + 1}. ${source.title} - ${source.url}`).join('\n')}
-      `.trim();
-      
-      navigator.clipboard.writeText(textToCopy);
-    }
+    if (!podcastState.research) return;
+    const text = [
+      `Topic: ${podcastState.research.topic}`,
+      '',
+      'Summary:',
+      podcastState.research.summary,
+      '',
+      'Key Points:',
+      ...podcastState.research.keyPoints.map((p, i) => `${i + 1}. ${p}`),
+      '',
+      'Sources:',
+      ...podcastState.research.sources.map((s, i) => `${i + 1}. ${s.title} — ${s.url}`),
+    ].join('\n');
+    navigator.clipboard.writeText(text);
   };
 
+  const displayError = localError || error;
+
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <h2 className="text-2xl font-bold mb-6">研究主題</h2>
-      
-      <div className="mb-6">
-        <label htmlFor="researchTopic" className="block text-sm font-medium text-gray-700 mb-2">
-          輸入播客主題
-        </label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            id="researchTopic"
-            value={researchTopic}
-            onChange={(e) => setResearchTopic(e.target.value)}
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            placeholder="例如：人工智慧的未來發展趨勢"
-            disabled={isResearching}
-          />
-          <button
-            onClick={handleStartResearch}
-            disabled={isResearching}
-            className={`px-6 py-2 rounded-md font-medium ${
-              isResearching
-                ? 'bg-gray-400 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
-            }`}
-          >
-            {isResearching ? '研究中...' : '開始研究'}
-          </button>
+    <div className="max-w-4xl mx-auto">
+      {/* Topic input + config */}
+      <div className="bg-white/5 rounded-2xl p-6 border border-white/10 mb-6">
+        <h2 className="text-2xl font-bold text-white mb-1">Research Your Topic</h2>
+        <p className="text-slate-400 text-sm mb-6">
+          Enter a topic and configure your podcast, then click Research.
+        </p>
+
+        {/* Topic input */}
+        <div className="mb-5">
+          <label htmlFor="researchTopic" className="block text-sm font-medium text-slate-300 mb-2">
+            Podcast Topic
+          </label>
+          <div className="flex gap-3">
+            <input
+              type="text"
+              id="researchTopic"
+              value={researchTopic}
+              onChange={(e) => setResearchTopic(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !isResearching && handleStartResearch()}
+              className="flex-1 bg-black/20 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              placeholder="e.g. How does quantum computing work?"
+              disabled={isResearching}
+            />
+            <button
+              onClick={handleStartResearch}
+              disabled={isResearching || !researchTopic.trim()}
+              className={`px-6 py-3 rounded-lg font-medium transition-all whitespace-nowrap ${
+                isResearching || !researchTopic.trim()
+                  ? 'bg-gray-600 cursor-not-allowed text-gray-400'
+                  : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+              }`}
+            >
+              {isResearching ? (
+                <span className="flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Researching…
+                </span>
+              ) : (
+                'Research'
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Config options */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Language */}
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-2">Language</label>
+            <select
+              value={config.language}
+              onChange={(e) =>
+                dispatch({
+                  type: 'SET_CONFIG',
+                  payload: { ...config, language: e.target.value as 'en' | 'zh-TW' },
+                })
+              }
+              disabled={isResearching}
+              className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="en">English</option>
+              <option value="zh-TW">繁體中文</option>
+            </select>
+          </div>
+
+          {/* Format */}
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-2">Format</label>
+            <select
+              value={config.format}
+              onChange={(e) =>
+                dispatch({
+                  type: 'SET_CONFIG',
+                  payload: { ...config, format: e.target.value as 'solo' | 'dialogue' },
+                })
+              }
+              disabled={isResearching}
+              className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="dialogue">Host + Expert Dialogue</option>
+              <option value="solo">Solo Narrator</option>
+            </select>
+          </div>
+
+          {/* Length */}
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-2">Length</label>
+            <select
+              value={config.length}
+              onChange={(e) =>
+                dispatch({
+                  type: 'SET_CONFIG',
+                  payload: { ...config, length: e.target.value as 'short' | 'medium' | 'long' },
+                })
+              }
+              disabled={isResearching}
+              className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="short">Short (~5 min)</option>
+              <option value="medium">Medium (~15 min)</option>
+              <option value="long">Long (~30 min)</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      {(error || localError) && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-red-700">{error || localError}</p>
+      {/* Error banner */}
+      {displayError && !isResearching && (
+        <div className="mb-6 p-4 bg-red-500/20 border border-red-500/30 rounded-xl text-red-200 text-sm">
+          {displayError}
         </div>
       )}
 
-      {isLoading && (
-        <div className="mb-6 flex flex-col items-center justify-center p-8 bg-gray-50 rounded-md">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-          <p className="text-gray-600">正在進行研究，請稍候...</p>
+      {/* Loading spinner */}
+      {(isLoading || isResearching) && (
+        <div className="mb-6 flex flex-col items-center justify-center p-10 bg-white/5 rounded-2xl border border-white/10">
+          <svg className="animate-spin h-10 w-10 text-indigo-400 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+          <p className="text-slate-300 font-medium">Researching your topic…</p>
+          <p className="text-slate-500 text-sm mt-1">This may take up to a minute.</p>
         </div>
       )}
 
-      {podcastState.research && (
-        <div className="mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xl font-semibold">研究結果</h3>
+      {/* Research results */}
+      {podcastState.research && !isResearching && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <h3 className="text-xl font-semibold text-white">Research Results</h3>
             <button
               onClick={handleCopyResults}
-              className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-md text-sm font-medium"
+              className="px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-sm font-medium text-slate-300 hover:text-white transition-colors"
             >
-              複製結果
+              Copy
             </button>
           </div>
-          
-          <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-6 mb-6">
-            <h4 className="text-lg font-medium mb-3">摘要</h4>
-            <p className="text-gray-700 whitespace-pre-wrap">{podcastState.research.summary}</p>
+
+          {/* Summary */}
+          <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+            <h4 className="text-xs font-semibold text-indigo-300 uppercase tracking-wider mb-3">Summary</h4>
+            <p className="text-slate-300 whitespace-pre-wrap leading-relaxed">{podcastState.research.summary}</p>
           </div>
-          
-          <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-6 mb-6">
-            <h4 className="text-lg font-medium mb-3">關鍵要點</h4>
-            <ul className="list-disc pl-5 space-y-2">
-              {podcastState.research.keyPoints.map((point, index) => (
-                <li key={index} className="text-gray-700">{point}</li>
-              ))}
-            </ul>
-          </div>
-          
-          <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-6">
-            <h4 className="text-lg font-medium mb-3">來源</h4>
-            <ul className="space-y-3">
-              {podcastState.research.sources.map((source, index) => (
-                <li key={index} className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                  <h5 className="font-medium text-gray-900">{source.title}</h5>
-                  <p className="text-sm text-gray-600 mt-1">{source.snippet}</p>
-                  <a 
-                    href={source.url} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 text-sm mt-1 inline-block"
-                  >
-                    {source.url}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-          
-          <div className="mt-6">
+
+          {/* Key Points */}
+          {podcastState.research.keyPoints.length > 0 && (
+            <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+              <h4 className="text-xs font-semibold text-indigo-300 uppercase tracking-wider mb-3">Key Points</h4>
+              <ul className="space-y-2">
+                {podcastState.research.keyPoints.map((point, index) => (
+                  <li key={index} className="flex gap-2 text-slate-300">
+                    <span className="text-indigo-400 font-bold flex-shrink-0">{index + 1}.</span>
+                    {point}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Sources */}
+          {podcastState.research.sources.length > 0 && (
+            <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+              <h4 className="text-xs font-semibold text-indigo-300 uppercase tracking-wider mb-3">Sources</h4>
+              <ul className="space-y-4">
+                {podcastState.research.sources.map((source, index) => (
+                  <li key={index} className="border-b border-white/5 pb-4 last:border-0 last:pb-0">
+                    <p className="font-medium text-white">{source.title}</p>
+                    {source.snippet && (
+                      <p className="text-sm text-slate-400 mt-1">{source.snippet}</p>
+                    )}
+                    <a
+                      href={source.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-indigo-400 hover:text-indigo-300 text-sm mt-1 inline-block truncate max-w-full"
+                    >
+                      {source.url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="pt-2">
             <button
               onClick={() => dispatch({ type: 'SET_CURRENT_STEP', payload: 'outline' })}
-              className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-md"
+              className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors"
             >
-              生成大綱
+              Generate Outline →
             </button>
           </div>
         </div>

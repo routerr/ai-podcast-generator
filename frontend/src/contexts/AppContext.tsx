@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useReducer } from 'react';
+import React, { createContext, useContext, useReducer, useEffect } from 'react';
 import { ApiKeys, PodcastState, AppStep, Question, SessionConfig, ResearchResult, Outline, Script, AudioState } from '../types';
+import { storageService } from '../services/storageService';
 
 // 定義狀態介面
 export interface AppState {
@@ -53,14 +54,14 @@ export type AppAction =
   | { type: 'UPDATE_SCRIPT'; payload: Script }
   | { type: 'REFINE_SCRIPT'; payload: { script: Script; feedback: string } };
 
-// 初始狀態
+// 初始狀態 — API keys are loaded from localStorage in the Provider
 const initialState: AppState = {
   apiKeys: {
     perplexityKey: '',
     geminiKey: '',
-    openaiKey: '' // 新增 OpenAI API 金鑰
+    openaiKey: ''
   },
-  currentStep: 'input',
+  currentStep: 'research',
   topic: '',
   questions: [],
   answers: {},
@@ -226,7 +227,17 @@ interface AppProviderProps {
 
 export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(appReducer, initialState);
-  
+
+  // Load API keys from localStorage on mount so all panels can use them
+  useEffect(() => {
+    const perplexityKey = storageService.getApiKey('perplexityKey') || '';
+    const geminiKey = storageService.getApiKey('geminiKey') || '';
+    const openaiKey = storageService.getApiKey('openaiKey') || '';
+    if (perplexityKey || geminiKey || openaiKey) {
+      dispatch({ type: 'SET_API_KEYS', payload: { perplexityKey, geminiKey, openaiKey } });
+    }
+  }, []);
+
   return (
     <AppContext.Provider value={{ ...state, dispatch }}>
       {children}

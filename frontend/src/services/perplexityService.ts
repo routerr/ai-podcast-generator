@@ -17,11 +17,18 @@ export class PerplexityService {
   }
 
   /**
-   * 研究主題並收集資訊
-   * @param topic 主題
-   * @returns 研究結果
+   * Research a topic and collect information
+   * @param topic Topic to research
+   * @param language Language for output ('en' | 'zh-TW')
+   * @returns Research result
    */
-  async researchTopic(topic: string): Promise<ResearchResult> {
+  async researchTopic(topic: string, language: 'en' | 'zh-TW' = 'en'): Promise<ResearchResult> {
+    const isZh = language === 'zh-TW';
+    const systemPrompt = isZh
+      ? '你是一個播客內容創作的研究助手。請提供關於主題的深入研究，包括摘要、關鍵要點和可靠來源。回應格式應為 JSON，包含 summary、keyPoints 和 sources 欄位。sources 應包含 title、url 和 snippet。所有內容請使用繁體中文。'
+      : 'You are a research assistant for podcast content creation. Provide in-depth research on the topic, including a summary, key points, and reliable sources. Respond in JSON format with fields: summary (string), keyPoints (string array), and sources (array of {title, url, snippet}). All content should be in English.';
+    const userPrompt = isZh ? `研究以下主題：${topic}` : `Research the following topic: ${topic}`;
+
     try {
       const response = await fetch(PERPLEXITY_API_URL, {
         method: 'POST',
@@ -32,14 +39,8 @@ export class PerplexityService {
         body: JSON.stringify({
           model: ONLINE_MODEL,
           messages: [
-            {
-              role: 'system',
-              content: '你是一個播客內容創作的研究助手。請提供關於主題的深入研究，包括摘要、關鍵要點和可靠來源。回應格式應為 JSON，包含 summary、keyPoints 和 sources 欄位。sources 應包含 title、url 和 snippet。'
-            },
-            {
-              role: 'user',
-              content: `研究以下主題：${topic}`
-            }
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
           ],
           max_tokens: 2000,
           return_related_questions: true,
@@ -53,21 +54,15 @@ export class PerplexityService {
 
       const data = await response.json();
       const content = data.choices[0].message.content;
-      
-      // 解析回應中的 JSON 內容
+
+      // Extract JSON from response (handle markdown code blocks)
       let parsedContent;
       try {
-        // 如果內容被包在 Markdown 代碼塊中，提取 JSON 部分
-        const jsonMatch = content.match(/```(?:json)?\s*({.*?})\s*```/s);
-        if (jsonMatch) {
-          parsedContent = JSON.parse(jsonMatch[1]);
-        } else {
-          parsedContent = JSON.parse(content);
-        }
-      } catch (parseError) {
-        // 如果解析失敗，創建一個基本結構
+        const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        parsedContent = JSON.parse(jsonMatch ? jsonMatch[1] : content);
+      } catch {
         parsedContent = {
-          summary: content.substring(0, 500) + (content.length > 500 ? '...' : ''),
+          summary: content.substring(0, 500) + (content.length > 500 ? '…' : ''),
           keyPoints: [],
           sources: []
         };
@@ -76,8 +71,8 @@ export class PerplexityService {
       return {
         topic,
         summary: parsedContent.summary || '',
-        keyPoints: parsedContent.keyPoints || [],
-        sources: parsedContent.sources || [],
+        keyPoints: Array.isArray(parsedContent.keyPoints) ? parsedContent.keyPoints : [],
+        sources: Array.isArray(parsedContent.sources) ? parsedContent.sources : [],
         timestamp: new Date()
       };
     } catch (error: unknown) {
@@ -91,11 +86,20 @@ export class PerplexityService {
   }
 
   /**
-   * 根據研究結果生成播客大綱
-   * @param research 研究結果
-   * @returns 大綱結構
+   * Generate a podcast outline from research results
+   * @param research Research results
+   * @param language Language for output
+   * @returns Outline structure
    */
-  async generateOutline(research: ResearchResult): Promise<Outline> {
+  async generateOutline(research: ResearchResult, language: 'en' | 'zh-TW' = 'en'): Promise<Outline> {
+    const isZh = language === 'zh-TW';
+    const systemPrompt = isZh
+      ? '你是一位專業的播客大綱創作者。基於提供的研究結果，創建一個結構良好的播客大綱。回應格式應為 JSON，包含 title、description 和 sections 欄位。sections 應是一個陣列，每個元素包含 id（唯一字串）、title、keyPoints（字串陣列）和 duration（秒數整數）。請使用繁體中文。'
+      : 'You are a professional podcast outline creator. Based on the research provided, create a well-structured podcast outline. Respond in JSON format with fields: title (string), description (string), and sections (array of {id: string, title: string, keyPoints: string[], duration: number}). Use English throughout.';
+    const userPrompt = isZh
+      ? `基於以下研究結果創建播客大綱：\n\n主題: ${research.topic}\n\n摘要: ${research.summary}\n\n關鍵要點: ${research.keyPoints.join(', ')}`
+      : `Create a podcast outline based on the following research:\n\nTopic: ${research.topic}\n\nSummary: ${research.summary}\n\nKey Points: ${research.keyPoints.join(', ')}`;
+
     try {
       const response = await fetch(PERPLEXITY_API_URL, {
         method: 'POST',
@@ -106,14 +110,8 @@ export class PerplexityService {
         body: JSON.stringify({
           model: LARGE_ONLINE_MODEL,
           messages: [
-            {
-              role: 'system',
-              content: '你是一位專業的播客大綱創作者。基於提供的研究結果，創建一個結構良好的播客大綱。回應格式應為 JSON，包含 title、description 和 sections 欄位。sections 應是一個陣列，每個元素包含 id、title、keyPoints 和 duration。'
-            },
-            {
-              role: 'user',
-              content: `基於以下研究結果創建播客大綱：\n\n主題: ${research.topic}\n\n摘要: ${research.summary}\n\n關鍵要點: ${research.keyPoints.join(', ')}`
-            }
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
           ],
           max_tokens: 2000
         })
@@ -126,29 +124,33 @@ export class PerplexityService {
       const data = await response.json();
       const content = data.choices[0].message.content;
       
-      // 解析回應中的 JSON 內容
+      // Extract JSON from response (handle markdown code blocks)
       let parsedContent;
       try {
-        // 如果內容被包在 Markdown 代碼塊中，提取 JSON 部分
-        const jsonMatch = content.match(/```(?:json)?\s*({.*?})\s*```/s);
-        if (jsonMatch) {
-          parsedContent = JSON.parse(jsonMatch[1]);
-        } else {
-          parsedContent = JSON.parse(content);
-        }
-      } catch (parseError) {
-        // 如果解析失敗，創建一個基本結構
+        const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        parsedContent = JSON.parse(jsonMatch ? jsonMatch[1] : content);
+      } catch {
         parsedContent = {
-          title: `關於 ${research.topic} 的播客`,
-          description: research.summary.substring(0, 200) + (research.summary.length > 200 ? '...' : ''),
+          title: `Podcast about ${research.topic}`,
+          description: research.summary.substring(0, 200) + (research.summary.length > 200 ? '…' : ''),
           sections: []
         };
       }
 
+      // Ensure every section has a unique id
+      const rawSections: OutlineSection[] = (parsedContent.sections || []).map(
+        (s: Partial<OutlineSection>, idx: number) => ({
+          id: s.id || `section-${Date.now()}-${idx}`,
+          title: s.title || `Section ${idx + 1}`,
+          keyPoints: Array.isArray(s.keyPoints) ? s.keyPoints : [],
+          duration: typeof s.duration === 'number' ? s.duration : 120,
+        })
+      );
+
       return {
-        title: parsedContent.title || `關於 ${research.topic} 的播客`,
+        title: parsedContent.title || `Podcast about ${research.topic}`,
         description: parsedContent.description || '',
-        sections: parsedContent.sections || []
+        sections: rawSections,
       };
     } catch (error: unknown) {
       console.error('生成大綱時發生錯誤:', error);

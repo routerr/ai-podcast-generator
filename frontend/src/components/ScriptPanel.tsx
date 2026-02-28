@@ -4,11 +4,12 @@ import { Dialogue, Script } from '../types';
 import { GeminiService } from '../services/geminiService';
 
 const ScriptPanel: React.FC = () => {
-  const { 
-    apiKeys, 
-    podcastState, 
-    isLoading, 
-    dispatch 
+  const {
+    apiKeys,
+    podcastState,
+    isLoading,
+    config,
+    dispatch,
   } = useAppContext();
   
   const [editingDialogueId, setEditingDialogueId] = useState<string | null>(null);
@@ -17,37 +18,38 @@ const ScriptPanel: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 生成腳本
+  // Generate script
   const generateScript = useCallback(async () => {
     if (!podcastState.outline || !podcastState.research || !apiKeys.geminiKey) {
-      setError('缺少必要的資訊來生成腳本');
+      setError('Missing required information to generate the script. Please complete the research and outline steps first.');
       return;
     }
 
     setIsGenerating(true);
     setError(null);
-    
+
     try {
       const geminiService = new GeminiService();
       const script = await geminiService.generatePodcastScript(
         apiKeys.geminiKey,
         podcastState.outline,
-        podcastState.research
+        podcastState.research,
+        config
       );
       
       dispatch({ type: 'SET_SCRIPT', payload: script });
     } catch (err) {
-      console.error('生成腳本時發生錯誤:', err);
-      setError(err instanceof Error ? err.message : '生成腳本時發生未知錯誤');
+      console.error('Script generation error:', err);
+      setError(err instanceof Error ? err.message : 'An unknown error occurred during script generation.');
     } finally {
       setIsGenerating(false);
     }
-  }, [apiKeys.geminiKey, dispatch, podcastState.outline, podcastState.research]);
+  }, [apiKeys.geminiKey, config, dispatch, podcastState.outline, podcastState.research]);
 
-  // 重新生成段落
+  // Regenerate a single section
   const regenerateSection = useCallback(async (sectionId: string) => {
     if (!podcastState.script || !podcastState.research || !apiKeys.geminiKey) {
-      setError('缺少必要的資訊來重新生成段落');
+      setError('Missing required information to regenerate this section.');
       return;
     }
 
@@ -57,98 +59,79 @@ const ScriptPanel: React.FC = () => {
     try {
       const geminiService = new GeminiService();
       const section = podcastState.outline?.sections.find(s => s.id === sectionId);
-      
+
       if (!section) {
-        throw new Error('找不到指定的段落');
+        throw new Error('Section not found in outline.');
       }
-      
-      // 獲取該段落的對話
-      const sectionDialogues = podcastState.script.dialogues.filter(d => 
+
+      // Use first 2 existing dialogues as context
+      const sectionDialogues = podcastState.script.dialogues.filter(d =>
         podcastState.script?.sections.find(s => s.id === sectionId)?.dialogueIds.includes(d.id)
       );
-      
-      // 獲取先前的對話作為上下文
-      const previousContext = sectionDialogues.slice(0, 2).map(d => 
-        `[${d.speaker === 'host' ? '主持人' : '專家'}] ${d.text}`
-      ).join('\n');
-      
-      // 生成新的對話
+      const previousContext = sectionDialogues.slice(0, 2)
+        .map(d => `[${d.speaker === 'host' ? 'Host' : 'Expert'}] ${d.text}`)
+        .join('\n');
+
       const newDialogues = await geminiService.generateSectionDialogue(
         apiKeys.geminiKey,
         section,
         podcastState.research!,
-        previousContext
+        previousContext,
+        config
       );
-      
-      // 更新腳本中的對話
+
+      // Replace old section dialogues with new ones
       const updatedDialogues = [...podcastState.script.dialogues];
-      const sectionStartIndex = updatedDialogues.findIndex(d => 
-        sectionDialogues.length > 0 ? d.id === sectionDialogues[0].id : false
-      );
-      
+      const sectionStartIndex = sectionDialogues.length > 0
+        ? updatedDialogues.findIndex(d => d.id === sectionDialogues[0].id)
+        : -1;
+
       if (sectionStartIndex !== -1) {
-        // 移除舊的對話
-        updatedDialogues.splice(sectionStartIndex, sectionDialogues.length);
-        // 插入新的對話
-        updatedDialogues.splice(sectionStartIndex, 0, ...newDialogues);
+        updatedDialogues.splice(sectionStartIndex, sectionDialogues.length, ...newDialogues);
       } else {
-        // 如果找不到位置，直接添加到末尾
         updatedDialogues.push(...newDialogues);
       }
-      
-      // 更新段落中的對話 ID
-      const updatedSections = podcastState.script.sections.map(s => {
-        if (s.id === sectionId) {
-          return {
-            ...s,
-            dialogueIds: newDialogues.map(d => d.id)
-          };
-        }
-        return s;
-      });
-      
-      const updatedScript: Script = {
-        ...podcastState.script,
-        dialogues: updatedDialogues,
-        sections: updatedSections
-      };
-      
-      dispatch({ type: 'UPDATE_SCRIPT', payload: updatedScript });
+
+      const updatedSections = podcastState.script.sections.map(s =>
+        s.id === sectionId ? { ...s, dialogueIds: newDialogues.map(d => d.id) } : s
+      );
+
+      dispatch({ type: 'UPDATE_SCRIPT', payload: { ...podcastState.script, dialogues: updatedDialogues, sections: updatedSections } });
     } catch (err) {
-      console.error('重新生成段落時發生錯誤:', err);
-      setError(err instanceof Error ? err.message : '重新生成段落時發生未知錯誤');
+      console.error('Section regeneration error:', err);
+      setError(err instanceof Error ? err.message : 'An unknown error occurred while regenerating the section.');
     } finally {
       setIsGenerating(false);
     }
-  }, [apiKeys.geminiKey, dispatch, podcastState.script, podcastState.research, podcastState.outline]);
+  }, [apiKeys.geminiKey, config, dispatch, podcastState.script, podcastState.research, podcastState.outline]);
 
-  // 優化腳本
+  // Refine script with user feedback
   const refineScript = useCallback(async () => {
     if (!podcastState.script || !apiKeys.geminiKey || !feedback.trim()) {
-      setError('缺少必要的資訊來優化腳本');
+      setError('Please enter feedback to refine the script.');
       return;
     }
 
     setIsGenerating(true);
     setError(null);
-    
+
     try {
       const geminiService = new GeminiService();
       const refinedScript = await geminiService.refineScript(
         apiKeys.geminiKey,
         podcastState.script,
-        feedback
+        feedback,
+        config
       );
-      
       dispatch({ type: 'UPDATE_SCRIPT', payload: refinedScript });
       setFeedback('');
     } catch (err) {
-      console.error('優化腳本時發生錯誤:', err);
-      setError(err instanceof Error ? err.message : '優化腳本時發生未知錯誤');
+      console.error('Script refinement error:', err);
+      setError(err instanceof Error ? err.message : 'An unknown error occurred during script refinement.');
     } finally {
       setIsGenerating(false);
     }
-  }, [apiKeys.geminiKey, dispatch, podcastState.script, feedback]);
+  }, [apiKeys.geminiKey, config, dispatch, podcastState.script, feedback]);
 
   // 開始編輯對話
   const startEditing = (dialogue: Dialogue) => {
@@ -189,7 +172,7 @@ const ScriptPanel: React.FC = () => {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
-  // 組件掛載時自動生成腳本
+  // Auto-generate script when arriving at this step
   useEffect(() => {
     if (!podcastState.script && podcastState.outline && podcastState.research && apiKeys.geminiKey) {
       generateScript();
@@ -199,9 +182,9 @@ const ScriptPanel: React.FC = () => {
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">播客腳本</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">Podcast Script</h1>
         <p className="text-gray-400">
-          以下是根據您的大綱生成的對話式播客腳本
+          Review and edit the generated dialogue script before producing audio.
         </p>
       </div>
 
@@ -222,7 +205,7 @@ const ScriptPanel: React.FC = () => {
         </div>
       )}
 
-      {/* 生成按鈕 */}
+      {/* Generate button (shown before script exists) */}
       {!podcastState.script && (
         <div className="mb-8">
           <button
@@ -240,16 +223,16 @@ const ScriptPanel: React.FC = () => {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                生成腳本中...
+                Generating Script…
               </span>
             ) : (
-              '生成播客腳本'
+              'Generate Podcast Script'
             )}
           </button>
-          
+
           {!apiKeys.geminiKey && (
             <p className="mt-2 text-yellow-500 text-sm">
-              請先在設定中提供 Google Gemini API 金鑰
+              Please provide your Google Gemini API key in Settings.
             </p>
           )}
         </div>
@@ -264,7 +247,7 @@ const ScriptPanel: React.FC = () => {
               <div>
                 <h2 className="text-2xl font-bold text-white mb-2">{podcastState.script.title}</h2>
                 <p className="text-gray-400">
-                  預估時長: {calculateDuration(podcastState.script.totalDuration)}
+                  Duration: {calculateDuration(podcastState.script.totalDuration)}
                 </p>
               </div>
               
@@ -278,28 +261,29 @@ const ScriptPanel: React.FC = () => {
                       : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                   }`}
                 >
-                  重新生成
+                  Regenerate
                 </button>
-                
+
                 <button
                   onClick={() => dispatch({ type: 'SET_CURRENT_STEP', payload: 'audio' })}
                   className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-all"
                 >
-                  生成音頻
+                  Generate Audio →
                 </button>
               </div>
             </div>
           </div>
 
-          {/* 優化腳本區域 */}
+          {/* Refine script */}
           <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
-            <h3 className="text-lg font-semibold text-white mb-4">優化腳本</h3>
+            <h3 className="text-lg font-semibold text-white mb-4">Refine Script</h3>
             <div className="flex space-x-3">
               <input
                 type="text"
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
-                placeholder="請提供您對腳本的反饋意見..."
+                onKeyDown={(e) => e.key === 'Enter' && !isGenerating && feedback.trim() && refineScript()}
+                placeholder="Describe what to change (e.g. 'Make it more casual' or 'Add more examples')…"
                 className="flex-1 px-4 py-2 bg-black/20 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <button
@@ -311,7 +295,7 @@ const ScriptPanel: React.FC = () => {
                     : 'bg-purple-600 hover:bg-purple-700 text-white'
                 }`}
               >
-                {isGenerating ? '處理中...' : '優化'}
+                {isGenerating ? 'Processing…' : 'Refine'}
               </button>
             </div>
           </div>
@@ -336,7 +320,7 @@ const ScriptPanel: React.FC = () => {
                           : 'bg-blue-600 hover:bg-blue-700 text-white'
                       }`}
                     >
-                      重新生成段落
+                      Regenerate Section
                     </button>
                   </div>
                   
@@ -363,13 +347,13 @@ const ScriptPanel: React.FC = () => {
                                 onClick={saveEdit}
                                 className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-sm font-medium"
                               >
-                                保存
+                                Save
                               </button>
                               <button
                                 onClick={cancelEdit}
                                 className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white rounded-md text-sm font-medium"
                               >
-                                取消
+                                Cancel
                               </button>
                             </div>
                           </div>
@@ -379,14 +363,11 @@ const ScriptPanel: React.FC = () => {
                               <span className={`font-semibold ${
                                 dialogue.speaker === 'host' ? 'text-blue-400' : 'text-green-400'
                               }`}>
-                                {dialogue.speaker === 'host' ? '主持人' : '專家'}
+                                {dialogue.speaker === 'host' ? 'Host' : 'Expert'}
                               </span>
                               {dialogue.emotion && (
-                                <span className="text-xs px-2 py-1 bg-white/10 rounded-full text-gray-300">
-                                  {dialogue.emotion === 'curious' && '好奇'}
-                                  {dialogue.emotion === 'excited' && '興奮'}
-                                  {dialogue.emotion === 'thoughtful' && '深思'}
-                                  {dialogue.emotion === 'neutral' && '中性'}
+                                <span className="text-xs px-2 py-1 bg-white/10 rounded-full text-gray-300 capitalize">
+                                  {dialogue.emotion}
                                 </span>
                               )}
                             </div>
@@ -395,7 +376,7 @@ const ScriptPanel: React.FC = () => {
                               onClick={() => startEditing(dialogue)}
                               className="mt-2 text-sm text-gray-400 hover:text-white transition-colors"
                             >
-                              編輯
+                              Edit
                             </button>
                           </div>
                         )}
@@ -409,7 +390,7 @@ const ScriptPanel: React.FC = () => {
         </div>
       )}
 
-      {/* 載入狀態 */}
+      {/* Loading overlay */}
       {(isLoading || isGenerating) && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-gray-800 rounded-2xl p-8 max-w-md w-full mx-4 border border-white/10">
@@ -418,9 +399,9 @@ const ScriptPanel: React.FC = () => {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              <h3 className="text-xl font-semibold text-white mb-2">處理中</h3>
+              <h3 className="text-xl font-semibold text-white mb-2">Working…</h3>
               <p className="text-gray-400 text-center">
-                我們正在生成您的播客腳本，請稍候...
+                Generating your podcast script, please wait…
               </p>
             </div>
           </div>
