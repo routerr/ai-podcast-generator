@@ -606,6 +606,7 @@ const providerProxyMiddlewarePlugin = () => ({
 
 export default defineConfig({
   plugins: [react(), providerProxyMiddlewarePlugin()],
+  cacheDir: './.vite',
   server: {
     port: 3000
   }

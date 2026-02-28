@@ -6,6 +6,12 @@ if (typeof window !== 'undefined') {
   (window as any).MPEGMode = (lamejs as any).MPEGMode || function (ordinal: number) {
     return { ordinal: () => ordinal };
   };
+  (window as any).Lame = (lamejs as any).Lame || {
+    V9: 410, V8: 420, V7: 430, V6: 440, V5: 450, V4: 460, V3: 470, V2: 480, V1: 490, V0: 500,
+    R3MIX: 1000, STANDARD: 1001, EXTREME: 1002, INSANE: 1003, STANDARD_FAST: 1004, EXTREME_FAST: 1005, MEDIUM: 1006, MEDIUM_FAST: 1007,
+    LAME_MAXMP3BUFFER: 16384 + 128 * 1024,
+    LAME_ID: 0xFFF88E3B
+  };
 }
 
 /**
@@ -93,9 +99,21 @@ export class AudioService {
     }
     
     for (let i = 0; i < left16.length; i += sampleBlockSize) {
-        const leftChunk = left16.subarray(i, i + sampleBlockSize);
-        const rightChunk = right16.subarray(i, i + sampleBlockSize);
+        let leftChunk = left16.subarray(i, i + sampleBlockSize);
+        let rightChunk = right16.subarray(i, i + sampleBlockSize);
         
+        // lamejs can crash (Cannot read properties of null) when processing chunks that aren't multiples of 1152.
+        // Pad the final chunk with zeroes to match sampleBlockSize.
+        if (leftChunk.length < sampleBlockSize) {
+          const paddedLeft = new Int16Array(sampleBlockSize);
+          paddedLeft.set(leftChunk);
+          leftChunk = paddedLeft;
+          
+          const paddedRight = new Int16Array(sampleBlockSize);
+          paddedRight.set(rightChunk);
+          rightChunk = paddedRight;
+        }
+
         let mp3buf;
         if (channels === 2) {
             mp3buf = encoder.encodeBuffer(leftChunk, rightChunk);
