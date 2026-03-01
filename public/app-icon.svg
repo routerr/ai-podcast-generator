@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AI Podcast Generator icon">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#313244" />
+      <stop offset="1" stop-color="#1e1e2e" />
+    </linearGradient>
+    <linearGradient id="mic" x1="32" y1="14" x2="32" y2="38" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f9e2af" />
+      <stop offset="1" stop-color="#fab387" />
+    </linearGradient>
+    <linearGradient id="wave" x1="16" y1="20" x2="48" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#89b4fa" />
+      <stop offset="1" stop-color="#74c7ec" />
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#bg)" />
+  <rect x="3.5" y="3.5" width="57" height="57" rx="13.5" fill="none" stroke="#585b70" />
+
+  <rect x="26" y="14" width="12" height="24" rx="6" fill="url(#mic)" />
+  <path d="M21 29a11 11 0 0 0 22 0" fill="none" stroke="url(#wave)" stroke-width="3" stroke-linecap="round" />
+  <path d="M32 41v8" fill="none" stroke="#cdd6f4" stroke-width="3" stroke-linecap="round" />
+  <path d="M24.5 51h15" fill="none" stroke="#cdd6f4" stroke-width="3" stroke-linecap="round" />
+
+  <path d="M16 24a9 9 0 0 0 0 16" fill="none" stroke="url(#wave)" stroke-width="3" stroke-linecap="round" />
+  <path d="M48 24a9 9 0 0 1 0 16" fill="none" stroke="url(#wave)" stroke-width="3" stroke-linecap="round" />
+</svg>
