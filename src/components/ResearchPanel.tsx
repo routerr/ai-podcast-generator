@@ -174,6 +174,31 @@ ${podcastState.research.sources.map((source, i) => `${i + 1}. ${source.title} - 
             {isResearching ? t('research.working') : t('research.start')}
           </button>
         </div>
+        
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="text-sm espresso-muted mr-1">{t('research.example.label' as any)}</span>
+          <button
+            onClick={() => setResearchTopic(t('research.example.topic1' as any))}
+            disabled={isResearching}
+            className="text-xs px-3 py-1.5 rounded-full espresso-card-soft hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t('research.example.topic1' as any)}
+          </button>
+          <button
+            onClick={() => setResearchTopic(t('research.example.topic2' as any))}
+            disabled={isResearching}
+            className="text-xs px-3 py-1.5 rounded-full espresso-card-soft hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t('research.example.topic2' as any)}
+          </button>
+          <button
+            onClick={() => setResearchTopic(t('research.example.topic3' as any))}
+            disabled={isResearching}
+            className="text-xs px-3 py-1.5 rounded-full espresso-card-soft hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t('research.example.topic3' as any)}
+          </button>
+        </div>
       </div>
 
       {(error || localError) && (
