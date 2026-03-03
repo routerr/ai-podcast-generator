@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const base = process.env.VITE_BASE_PATH || '/';
+
 const PERPLEXITY_SEARCH_API_URL = 'https://api.perplexity.ai/search';
 const PERPLEXITY_CHAT_API_URL = 'https://api.perplexity.ai/chat/completions';
 const OPENROUTER_CHAT_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -605,6 +607,7 @@ const providerProxyMiddlewarePlugin = () => ({
 });
 
 export default defineConfig({
+  base,
   plugins: [react(), providerProxyMiddlewarePlugin()],
   cacheDir: './.vite',
   server: {

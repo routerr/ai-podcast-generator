@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { storageService } from '../services/storageService';
 import { ApiKeys } from '../types';
 import { useAppContext } from '../contexts/AppContext';
+import { resolveProxyEndpoint } from '../utils/runtimeConfig';
 
-const PERPLEXITY_PROXY_ENDPOINTS = ['/pplx/validate', '/api/perplexity/validate'];
-const GEMINI_PROXY_ENDPOINTS = ['/gemini/validate', '/api/gemini/validate'];
-const OPENAI_PROXY_ENDPOINTS = ['/openai/validate', '/api/openai/validate'];
-const OPENROUTER_PROXY_ENDPOINTS = ['/openrouter/validate', '/api/openrouter/validate'];
-const OLLAMA_PROXY_ENDPOINTS = ['/ollama/validate', '/api/ollama/validate'];
+const PERPLEXITY_PROXY_ENDPOINTS = [resolveProxyEndpoint('/pplx/validate'), resolveProxyEndpoint('/api/perplexity/validate')];
+const GEMINI_PROXY_ENDPOINTS = [resolveProxyEndpoint('/gemini/validate'), resolveProxyEndpoint('/api/gemini/validate')];
+const OPENAI_PROXY_ENDPOINTS = [resolveProxyEndpoint('/openai/validate'), resolveProxyEndpoint('/api/openai/validate')];
+const OPENROUTER_PROXY_ENDPOINTS = [resolveProxyEndpoint('/openrouter/validate'), resolveProxyEndpoint('/api/openrouter/validate')];
+const OLLAMA_PROXY_ENDPOINTS = [resolveProxyEndpoint('/ollama/validate'), resolveProxyEndpoint('/api/ollama/validate')];
 const MAX_API_KEY_LENGTH = 512;
 
 type KeyStatus = {
@@ -63,7 +64,7 @@ const isLocalhostEnvironment = (): boolean =>
 
 const getProxyEndpoints = (preferredLocalEndpoint: string, endpoints: string[]): string[] =>
   isLocalhostEnvironment()
-    ? [preferredLocalEndpoint]
+    ? [resolveProxyEndpoint(preferredLocalEndpoint)]
     : endpoints;
 
 /**
