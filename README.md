@@ -91,6 +91,22 @@ bun run build
 
 ## Deployment
 
+
+### GitHub Pages (static frontend)
+
+This repository now includes a GitHub Actions workflow to publish the Vite app to GitHub Pages.
+
+Important runtime note:
+
+- GitHub Pages only serves static assets, so it does **not** host this repo's `/api/*` serverless routes.
+- To keep proxy-dependent features (key validation, OpenRouter/Ollama proxy chat) working, deploy the `api/` routes separately (for example Vercel) and set:
+
+```bash
+VITE_API_BASE_URL=https://your-proxy-host.example.com
+```
+
+The app will prepend `VITE_API_BASE_URL` to proxy endpoints in production.
+
 ### Recommended: Vercel
 
 This repository includes:

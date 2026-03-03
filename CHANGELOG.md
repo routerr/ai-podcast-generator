@@ -1,5 +1,16 @@
 # Changelog
 
+
+## [2.1.1] - 2026-03-02
+
+### Added
+- GitHub Pages deployment workflow (`.github/workflows/deploy-pages.yml`) with automatic Vite base-path configuration.
+- Runtime proxy host override support via `VITE_API_BASE_URL` for static deployments.
+
+### Changed
+- Vite config now supports configurable base path via `VITE_BASE_PATH`.
+- Proxy endpoint resolution in API-key validation, OpenAI-compatible LLM proxy calls, and Ollama model loading now respects `VITE_API_BASE_URL`.
+
 ## [2.1.0] - 2026-02-19
 
 ### Added

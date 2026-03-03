@@ -5,6 +5,7 @@ import { useAppContext } from '../contexts/AppContext';
 import { useI18n } from '../contexts/I18nContext';
 import { LLMFallbackProvider, LLMProvider } from '../types';
 import { getProviderDisplayName, isLocalOllamaBaseUrl } from '../services/llmWorkflowService';
+import { resolveProxyEndpoint } from '../utils/runtimeConfig';
 import { storageService } from '../services/storageService';
 import { useToast } from './Toast';
 import { useConfirmDialog } from './ConfirmDialog';
@@ -339,7 +340,9 @@ export const ApiKeyPanel: React.FC<ApiKeyPanelProps> = ({ isOpen, onClose, onRes
       return dedupeModels(defaultModelOptions.ollama);
     }
 
-    const endpoints = isLocalhostEnvironment() ? ['/ollama/models'] : ['/api/ollama/models'];
+    const endpoints = isLocalhostEnvironment()
+      ? [resolveProxyEndpoint('/ollama/models')]
+      : [resolveProxyEndpoint('/api/ollama/models')];
     let lastStatus = 0;
 
     for (const endpoint of endpoints) {

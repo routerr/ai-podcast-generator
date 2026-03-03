@@ -1,4 +1,5 @@
 import { Dialogue, Outline, OutlineSection, ResearchResult, Script, ScriptSection, Source } from '../types';
+import { resolveProxyEndpoint } from '../utils/runtimeConfig';
 
 const MAX_API_KEY_LENGTH = 512;
 
@@ -172,7 +173,9 @@ export class OpenAiCompatibleLlmService {
   }
 
   private getProxyEndpoints(): string[] {
-    return this.isLocalhostEnvironment() ? ['/llm/chat'] : ['/api/llm/chat'];
+    return this.isLocalhostEnvironment()
+      ? [resolveProxyEndpoint('/llm/chat')]
+      : [resolveProxyEndpoint('/api/llm/chat')];
   }
 
   private extractJsonRecord(content: string): JsonRecord | null {

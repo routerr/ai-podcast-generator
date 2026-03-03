@@ -163,3 +163,31 @@ Checks:
 ---
 
 Last updated: 2026-02-19
+
+## 9. GitHub Pages Deployment
+
+This repo includes `.github/workflows/deploy-pages.yml` to publish `dist/` to GitHub Pages.
+
+### 9.1 Setup
+
+1. In GitHub repo settings, enable **Pages** and set source to **GitHub Actions**.
+2. Ensure your default deployment branch is `main` (or adjust the workflow trigger).
+3. Push to `main` or run the workflow manually via **Actions**.
+
+### 9.2 Base path
+
+The workflow sets:
+
+- `VITE_BASE_PATH=/<repo-name>/`
+
+so the built app resolves JS/CSS assets correctly under a project Pages URL.
+
+### 9.3 Proxy/API behavior on Pages
+
+GitHub Pages cannot run this repository's `/api/*` serverless routes.
+
+If you want proxy-dependent features on Pages, deploy proxy routes elsewhere and set this repository secret/environment variable for the build:
+
+- `VITE_API_BASE_URL=https://your-proxy-host.example.com`
+
+When set, frontend proxy calls are automatically prefixed with this host.
